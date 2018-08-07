@@ -510,6 +510,47 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
 
         return obs_out
 
+    def read_pm10_obs(time):
+
+        pm10_obs = {}
+        from_zone = tz.gettz('GMT')
+        to_zone = tz.gettz('UTC')
+
+        dir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/MorningBL/data/DEFRA/'
+        aer_fname = dir + 'PM10_Hr_NK_DEFRA_AURN_01012014-30052018.csv'
+
+        raw_aer = np.genfromtxt(aer_fname, delimiter=',', skip_header=5, dtype="|S20")
+
+        # sort out times as they are in two columns
+        rawtime = [i[0] + ' ' + i[1].replace('24:00:00', '00:00:00') for i in raw_aer]
+        time_endHr = np.array([dt.datetime.strptime(i, '%d/%m/%Y %H:%M:%S') for i in rawtime])
+        # convert from GMT to UTC and remove the timezone afterwards
+        time_endHr = np.array([i.replace(tzinfo=from_zone) for i in time_endHr])  # label time as 'GMT'
+        pro_time = np.array([i.astimezone(to_zone) for i in time_endHr])  # find time as 'UTC'
+        pro_time = np.array([i.replace(tzinfo=None) for i in pro_time])  # remove 'UTC' timezone identifier
+
+        # extract obs and time together as a dictionary entry for the site.
+        data_obs = {'pm_10': np.array([np.nan if i == 'No data' else i for i in raw_aer[:, 2]], dtype=float),
+                    'time': pro_time}
+
+        # match the time sample resolution of mod_data
+
+        # find nearest time in rh time
+        # pull out ALL the nearest time idxs and differences
+        t_idx = np.array([eu.nearest(data_obs['time'], t)[1] for t in time])
+        t_diff = np.array([eu.nearest(data_obs['time'], t)[2] for t in time])
+
+        # extract ALL nearest hours data, regardless of time difference
+        pm10_obs['pm_10'] = data_obs['pm_10'][t_idx]
+        pm10_obs['time'] = [data_obs['time'][i] for i in t_idx]
+
+        # overwrite t_idx locations where t_diff is too high with nans
+        # only keep t_idx values where the difference is below 5 minutes
+        bad = np.array([abs(i.days * 86400 + i.seconds) > 10 * 60 for i in t_diff])
+        pm10_obs['pm_10'][bad] = np.nan
+
+        return pm10_obs
+
     def calc_r_m_original(r_md, rh_frac, B=FOcon.B_activation_haywood):
 
         """
@@ -582,17 +623,27 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
 
     # ---------------------------
 
-    # Number concentration [m-3]
-    # Read in N_aer from observations and time match to existing time resolution
-    if 'obs_N' in kwargs.keys():
-        N_aer_cm3 = read_obs_aer(rh_frac, time, 'Ntot_'+aer_mode) # [cm-3]
-        N_aer = N_aer_cm3 *1e6 # convert to [m-3]
+    if 'pm10_as_aerosol_input' in kwargs:
+        # convert pm10 from [microgram_aer m-3] to [kg_aer kg_air] and name it q_aer_kg_kg, which murk is usually
+        #    called. This will pass it through the functions as if it was murk aerosol.
+        # then estimate N and r from it
+        pm10 = read_pm10_obs(time)
+        q_aer_kg_kg = pm10['pm_10'][:, None] / rho * 1.0e-9
+        N_aer = N0 * np.power((q_aer_kg_kg / m0), 1.0 - (3.0 * p))
+        r_md = r0 * np.power((q_aer_kg_kg / m0), p)
 
-    # Dry mean radius of bulk aerosol (this radius is the same as the volume mean radius)
-    # mean radius (by volume, and it is not the geometric radius)
-    if 'obs_r' in kwargs.keys():
-        D_md = read_obs_aer(rh_frac, time, 'Dv_'+aer_mode) # Diameter [nm]
-        r_md = D_md/2.0 * 1e-9 # radius [m]
+    else:
+        # Number concentration [m-3]
+        # Read in N_aer from observations and time match to existing time resolution
+        if 'obs_N' in kwargs.keys():
+            N_aer_cm3 = read_obs_aer(rh_frac, time, 'Ntot_'+aer_mode) # [cm-3]
+            N_aer = N_aer_cm3 *1e6 # convert to [m-3]
+
+        # Dry mean radius of bulk aerosol (this radius is the same as the volume mean radius)
+        # mean radius (by volume, and it is not the geometric radius)
+        if 'obs_r' in kwargs.keys():
+            D_md = read_obs_aer(rh_frac, time, 'Dv_'+aer_mode) # Diameter [nm]
+            r_md = D_md/2.0 * 1e-9 # radius [m]
 
     # Geometric mean radius of bulk aerosol [meters]
     #   derived from a linear fit between observed r_md (volume mean) and r_g
@@ -600,7 +651,7 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
     if aer_mode == 'accum':
         # (Pearson r = 0.65, p > 0.0)
         r_g = (0.24621593450654974 * r_md) + 0.03258363072889052
-        print 'geometric radiu calculated for accum mode aerosol'
+        print 'geometric radius calculated for accum mode aerosol'
     elif aer_mode == 'fine':
         print 'geometric radius calculated for fine mode aerosol'
         # (Pearson r = 0.83, p > 0.0)
@@ -781,7 +832,7 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
 
         return S
 
-    def extract_S_hourly():
+    def extract_S_hourly(FO_dict, time, ceil_lam):
 
         """
         Read in and extract S calculated for that hour from calc_lidar_ratio_general.py on the linux system
@@ -803,7 +854,8 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
         # fill S array
         for t, time_t in enumerate(time):  # time
             _, t_idx, diff = eu.nearest(S_time, time_t)
-            if diff > 1:
+            # if the difference is less than an hour, extract the value (so discard differences exactly equal to 1 hour)
+            if diff.total_seconds() < 60 * 60:
                 S[t, :] = S_timeseries[t_idx]
 
         return S
@@ -846,6 +898,10 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
         # use the calculated timeseries of S
         S = extract_S_hourly(FO_dict, time, ceil_lam)
 
+    elif 'use_S_constant' in kwargs:
+        print 'using a constant S of ' + str(kwargs['use_S_constant'])
+        S = kwargs['use_S_constant']
+
     else:
         # Use parameterised S instead -> either constant or S(RH)
         if version <= 1.0:
@@ -857,9 +913,9 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
             # hold it constant for now, until the climatology has been made
             S = get_S_climatology(time, rh_frac, ceil_lam)
 
-        # Calculate backscatter using a constant lidar ratio
-        # ratio between PARTICLE extinction and backscatter coefficient (not total extinction!).
-        beta_a = aer_ext_coeff_tot / S
+    # Calculate backscatter using a constant lidar ratio
+    # ratio between PARTICLE extinction and backscatter coefficient (not total extinction!).
+    beta_a = aer_ext_coeff_tot / S
 
     # store all elements into a dictionary for output and diagnostics
     export_vars = {'beta_a': beta_a,
@@ -1595,9 +1651,9 @@ def read_wxt_obs(day, time, z):
     t_idx = np.array([eu.nearest(wxt_obs['time'], t)[1] for t in time])
     t_diff = np.array([eu.nearest(wxt_obs['time'], t)[2] for t in time])
 
-    wxt_obs['RH'] = wxt_obs['RH'][t_idx]
-    wxt_obs['Tair'] = wxt_obs['Tair'][t_idx]
-    wxt_obs['press'] = wxt_obs['press'][t_idx]
+    wxt_obs['RH'] = wxt_obs['RH'][t_idx] # [%]
+    wxt_obs['Tair'] = wxt_obs['Tair'][t_idx] # [degC]
+    wxt_obs['press'] = wxt_obs['press'][t_idx] # [hPa]
     wxt_obs['time'] = wxt_obs['time'][t_idx]
     wxt_obs['rawtime'] = wxt_obs['rawtime'][t_idx]
 
@@ -1619,10 +1675,10 @@ def read_wxt_obs(day, time, z):
     e_s_hpa = 6.112 * (np.exp((17.67 * wxt_obs['Tair']) / (wxt_obs['Tair'] + 243.5)))  # [hPa] # sat. v. pressure
     e_s = e_s_hpa * 100.0  # [Pa] # sat. v. pressure
     wxt_obs['e'] = wxt_obs['RH_frac'] * e_s  # [Pa] # v. pressure
-    wxt_obs['r_v'] = wxt_obs['e'] / (1.61 * (wxt_obs['press'] - wxt_obs['e'])) # water_vapour mixing ratio [kg kg-1]
-    wxt_obs['q'] =  wxt_obs['e'] / ((1.61 * (wxt_obs['press'] - wxt_obs['e'])) + wxt_obs['e']) # specific humidity [kg kg-1]
+    wxt_obs['r_v'] = wxt_obs['e'] / (1.61 * ((wxt_obs['press']*100.0) - wxt_obs['e'])) # water_vapour mixing ratio [kg kg-1]
+    wxt_obs['q'] =  wxt_obs['e'] / ((1.61 * ((wxt_obs['press']*100.0) - wxt_obs['e'])) + wxt_obs['e']) # specific humidity [kg kg-1]
     wxt_obs['Tv'] = (1 + (0.61 * wxt_obs['q'])) * (wxt_obs['Tair'] + 273.15) # virtual temp [K]
-    wxt_obs['air_density'] = wxt_obs['press'] / (286.9 * wxt_obs['Tv'])# [kg m-3]
+    wxt_obs['air_density'] = (wxt_obs['press']*100.0) / (286.9 * wxt_obs['Tv'])# [kg m-3]
 
     # extend the wxt obs in height to match the dimensions of model RH
     #   copy the obs so it is the same at all heights

@@ -48,7 +48,7 @@ def forward_operator(aer_mod, rh_frac, r_v, mod_rho, z_mod,  ceil_lam, version, 
                              version, mod_time, **kwargs)
 
     mod_alpha = FO_dict['alpha_a']
-    mod_bscUnnAtt = FO_dict['beta_a']
+    mod_bscUnnAtt = FO_dict['unnatenuated_backscatter']
 
     # NN = 28800 # number of enteries in time
     dz = np.zeros_like(z_mod)
@@ -62,6 +62,7 @@ def forward_operator(aer_mod, rh_frac, r_v, mod_rho, z_mod,  ceil_lam, version, 
     bsc_mod = mod_transm * mod_bscUnnAtt
 
     FO_dict['bsc_attenuated'] = bsc_mod
+    FO_dict['transmission'] = mod_transm
 
     return FO_dict
 
@@ -119,11 +120,11 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
 
         return obs_out
 
-    def calc_r_m_original(r_md, rh_frac, B=FOcon.B_activation_haywood):
+    def calc_r_m_original(r_d, rh_frac, B=FOcon.B_activation_haywood):
 
         """
         Original method to calculate swollen radii size for the FO in version 0.1 of the aerFO
-        :param r_md:
+        :param r_d:
         :param rh_frac:
         :param B: RH activation parameter
         :return:
@@ -142,13 +143,13 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
         # eq 12 - calc rm for RH greater than critical
         r_m = np.ma.ones(rh_frac.shape) - (B / np.ma.log(rh_frac))
         r_m2 = np.ma.power(r_m, 1. / 3.)
-        r_m = np.ma.array(r_md) * r_m2
+        r_m = np.ma.array(r_d) * r_m2
 
         # set rm as 0 where RH is less than crit
         r_m = np.ma.MaskedArray.filled(r_m, [0.0])
         where_lt_crit = np.where(np.logical_or(RH_perc.data < RH_crit_perc, r_m == 0.0))
-        # refill them with r_md
-        r_m[where_lt_crit] = r_md[where_lt_crit]
+        # refill them with r_d
+        r_m[where_lt_crit] = r_d[where_lt_crit]
 
         return r_m
 
@@ -243,44 +244,46 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
 
     # Dry mean radius of bulk aerosol (this radius is the same as the volume mean radius)
     if 'obs_r' not in kwargs.keys():
-        r_md = r0 * np.power((q_aer_kg_kg / m0), p)
+        r_d = r0 * np.power((q_aer_kg_kg / m0), p)
     else:
         if kwargs['obs_r'] == True:
             # mean radius (by volume, and it is not the geometric radius)
-            D_md = read_obs_aer(q_aer, mod_time, 'Dv_accum') # Diameter [nm]
-            r_md = D_md/2.0 * 1e-9 # radius [m]
+            D_d = read_obs_aer(q_aer, mod_time, 'Dv_accum') # Diameter [nm]
+            r_d = D_d/2.0 * 1e-9 # radius [m]
 
     # Geometric mean radius of bulk aerosol [meters]
-    #   derived from a linear fit between observed r_md (volume mean) and r_g (Pearson r = 0.65, p=0.0)
+    #   derived from a linear fit between observed r_d (volume mean) and r_g (Pearson r = 0.65, p=0.0)
     #   used purely for the f_RH LUT in calc_Q_ext_wet()
-    r_g = (0.24621593450654974 * r_md) + 0.03258363072889052
+    # r_g = (0.24621593450654974 * r_d) + 0.03258363072889052 # 80 - 700 nm paper 2
+    r_g = (0.122 * r_d) + 4.59e-8  # 80 - 800 nm
 
     # calculate Q_ext (wet particle extinction efficiency)
     if version <= 1.0:
         # MURK = fixed 3 aerosol types (amm. nit.; amm. sulph.; OC)
         # Q_ext,dry function of dry size only
         # f(RH) function of RH only
-        Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet_v1p0(ceil_lam, r_md, rh_frac)
+        Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet_v1p0(ceil_lam, r_d, rh_frac)
         print 'using old method (v1.0) for Q_ext'
     elif version > 1.0:
         # MURK, monthly varying based on (amm. nit.; amm. sulph.; OC; BC; sea salt)
         # Q_ext,dry function of dry size, month
         # f(RH) function of RH, geometric mean of dry particle distribution, month
-        Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet(ceil_lam, r_md, r_g, rh_frac, mod_time)
+        Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time)
 
     # Calculate extinction coefficient
     # eqns. 17-18 in Clark et.al. (2008)
     if version == 0.1:
         # v0.1 original aerFO version - now outdated
         # calculate swollen radii and extinction coefficient using it
-        r_m = calc_r_m_original(r_md, rh_frac)
+        r_m = calc_r_m_original(r_d, rh_frac)
         aer_ext_coeff = (eta * FOcon.Q_ext_aer) * np.pi * N_aer * np.power(r_m, 2)
         print 'Using old version 0.1 approach to swell particles'
 
     # v0.2 - use dry radii and an extinction enhancement factor, to include the effect of hygroscopic growth on optical
     #   properties
     elif version >= 0.2:
-        aer_ext_coeff = (eta * Q_ext) * np.pi * N_aer * np.power(r_md, 2)
+        # aer_ext_coeff = (eta * Q_ext) * np.pi * N_aer * np.power(r_d, 2) # when optical properties were not calc for distributions
+        aer_ext_coeff = Q_ext * np.pi * N_aer * np.power(r_d, 2)
 
     # calculate the water vapour extinction coefficient
     # T = 16.85 degC, q = 0.01 kg kg-1; p = 1100 hPa
@@ -292,7 +295,7 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
         # gaussian weighted average (mean = 905, FWHM = 4) = 0.016709242714125036 # (current) should be used for CL31 (kotthaus et al., 2016)
         # gaussian weighted average (mean = 905, FWHM = 8) = 0.024222946249630242 # (test) test sensitivity to FWHM
         # gaussian weighted average (mean = 900, FWHM = 4) = 0.037273493204864103 # (highest wv abs for a central wavelength between 895 - 915)
-        wv_ext_coeff = 0.016709242714125036 * rho * r_v
+        wv_ext_coeff = 0.016709242714125036 * mod_rho * r_v
     else:
         raise ValueError('ceilometer wavelength != 905 nm, need to calculate a new gaussian average to \n'
                          'calculate water vapour extinction coefficient for this new wavelength!')
@@ -325,11 +328,11 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
     beta_a = aer_ext_coeff / S
 
     # store all elements into a dictionary for output and diagnostics
-    FO_dict = {'beta_a': beta_a,
+    FO_dict = {'unnatenuated_backscatter': beta_a,
                 'alpha_a': alpha_a,
                 'aer_ext_coeff': aer_ext_coeff,
                 'wv_ext_coeff': wv_ext_coeff,
-                'r_md': r_md,
+                'r_d': r_d,
                 'r_g':r_g,
                 'N': N_aer,
                 'Q_ext': Q_ext,
@@ -432,7 +435,7 @@ def forward_operator_from_obs(day, ceil_lam, version, r0 = FOcon.r0_haywood, p =
                                  version, time, aer_modes, **kwargs)
 
     mod_alpha = FO_dict['alpha_a'] # extinction
-    mod_bscUnnAtt = FO_dict['beta_a'] # backscatter (unattenuated)
+    mod_bscUnnAtt = FO_dict['unnatenuated_backscatter'] # backscatter (unattenuated)
 
     # /delta z to help compute AOD and transmission
     dz = np.zeros_like(z)
@@ -445,6 +448,7 @@ def forward_operator_from_obs(day, ceil_lam, version, r0 = FOcon.r0_haywood, p =
     # derive modelled attenuated backscatter
     bsc_mod = mod_transm * mod_bscUnnAtt
     FO_dict['backscatter'] = bsc_mod
+    FO_dict['transmission'] = mod_transm
     FO_dict['level_height'] = z
     FO_dict['time'] = time
 
@@ -482,7 +486,7 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
         filedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/MorningBL/' + \
                   'data/npy/number_distribution/'
 
-        filepath = filedir + 'NK_APS_SMPS_Ntot_Dv_fine_acc_coarse_' + time[0].strftime('%Y') + '_80-700nm.npy'
+        filepath = filedir + 'NK_APS_SMPS_Ntot_Dv_fine_acc_coarse_' + time[0].strftime('%Y') + '_80-800nm.npy'
         data_in = np.load(filepath).flat[0]
         # delete accum range variable
         if 'accum_range' in data_in:
@@ -551,11 +555,11 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
 
         return pm10_obs
 
-    def calc_r_m_original(r_md, rh_frac, B=FOcon.B_activation_haywood):
+    def calc_r_m_original(r_d, rh_frac, B=FOcon.B_activation_haywood):
 
         """
         Original method to calculate swollen radii size for the FO in version 0.1 of the aerFO
-        :param r_md:
+        :param r_d:
         :param rh_frac:
         :param B: RH activation parameter
         :return:
@@ -574,13 +578,13 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
         # eq 12 - calc rm for RH greater than critical
         r_m = np.ma.ones(rh_frac.shape) - (B / np.ma.log(rh_frac))
         r_m2 = np.ma.power(r_m, 1. / 3.)
-        r_m = np.ma.array(r_md) * r_m2
+        r_m = np.ma.array(r_d) * r_m2
 
         # set rm as 0 where RH is less than crit
         r_m = np.ma.MaskedArray.filled(r_m, [0.0])
         where_lt_crit = np.where(np.logical_or(RH_perc.data < RH_crit_perc, r_m == 0.0))
-        # refill them with r_md
-        r_m[where_lt_crit] = r_md[where_lt_crit]
+        # refill them with r_d
+        r_m[where_lt_crit] = r_d[where_lt_crit]
 
         return r_m
 
@@ -630,7 +634,7 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
         pm10 = read_pm10_obs(time)
         q_aer_kg_kg = pm10['pm_10'][:, None] / rho * 1.0e-9
         N_aer = N0 * np.power((q_aer_kg_kg / m0), 1.0 - (3.0 * p))
-        r_md = r0 * np.power((q_aer_kg_kg / m0), p)
+        r_d = r0 * np.power((q_aer_kg_kg / m0), p)
 
     else:
         # Number concentration [m-3]
@@ -642,48 +646,56 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
         # Dry mean radius of bulk aerosol (this radius is the same as the volume mean radius)
         # mean radius (by volume, and it is not the geometric radius)
         if 'obs_r' in kwargs.keys():
-            D_md = read_obs_aer(rh_frac, time, 'Dv_'+aer_mode) # Diameter [nm]
-            r_md = D_md/2.0 * 1e-9 # radius [m]
+            D_d = read_obs_aer(rh_frac, time, 'Dv_'+aer_mode) # Diameter [nm]
+            r_d = D_d/2.0 * 1e-9 # radius [m]
 
     # Geometric mean radius of bulk aerosol [meters]
-    #   derived from a linear fit between observed r_md (volume mean) and r_g
+    #   derived from a linear fit between observed r_d (volume mean) and r_g
     #   used purely for the f_RH LUT in calc_Q_ext_wet()
     if aer_mode == 'accum':
         # (Pearson r = 0.65, p > 0.0)
-        r_g = (0.24621593450654974 * r_md) + 0.03258363072889052
+        # r_g = (0.24621593450654974 * r_d) + 0.03258363072889052 # 80 - 700 nm paper 2
+        r_g = (0.122 * r_d) + 4.59e-8 # 80 - 800 nm
         print 'geometric radius calculated for accum mode aerosol'
     elif aer_mode == 'fine':
-        print 'geometric radius calculated for fine mode aerosol'
         # (Pearson r = 0.83, p > 0.0)
-        r_g = (1.05 * r_md) - 0.011
+        # r_g = (1.05 * r_d) - 0.011 # 80 - 700 nm paper 2
+        r_g = (1.0666 * r_d) - 1.10e-8 # 80 - 800 nm
+        print 'geometric radius calculated for fine mode aerosol'
     elif aer_mode == 'coarse':
         # (Pearson r = 0.57, p > 0.0 where coarse maximum = 10.0 microns)
-        r_g = (0.1063 * r_md) + 0.4039
-        print 'geometric radius calculated for coarse mode aerosol'
-        # alternative where coarse maximum is APS maximum bin
+        # r_g = (0.1063 * r_d) + 0.4039 # 70 - 700 nm paper 2
+        # alternative where coarse maximum is APS maximum bin # 80 - 700 nm paper 2
         # (Pearson r = 0.58, p > 0.0)
-        # r_g = (0.0765 * r_md) + 0.4632
+        # r_g = (0.0765 * r_d) + 0.4632
+        r_g = (0.1211 * r_d) + 3.946e-7 # 80 - 800 nm
+        print 'geometric radius calculated for coarse mode aerosol'
 
-    # calculate Q_ext (wet particle extinction efficiency)
-    # if doing multiple modes, there would need to be one of these for each, i.e. Q_ext_accum, Q_ext_fine...
-    if version <= 1.0:
-        # MURK = fixed 3 aerosol types (amm. nit.; amm. sulph.; OC)
-        # Q_ext,dry function of dry size only
-        # f(RH) function of RH only
-        Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet_v1p0(ceil_lam, r_md, rh_frac)
-        print 'using old method (v1.0) for Q_ext'
-    elif version > 1.0:
-        # MURK, monthly varying based on (amm. nit.; amm. sulph.; OC; BC; sea salt)
-        # Q_ext,dry function of dry size, month
-        # f(RH) function of RH, geometric mean of dry particle distribution, month
-        Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet(ceil_lam, r_md, r_g, rh_frac, time)
+    if ('hourly_Q_extdry' in kwargs) & ('hourly_fRH' in kwargs):
+        # read in hourly Q_ext,dry and f(RH) to make Q_ext
+        Q_ext, Q_ext_dry_matrix, f_RH_matrix = hourly_obs_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, time)
+
+    else:
+        # calculate Q_ext (wet particle extinction efficiency)
+        # if doing multiple modes, there would need to be one of these for each, i.e. Q_ext_accum, Q_ext_fine...
+        if version <= 1.0:
+            # MURK = fixed 3 aerosol types (amm. nit.; amm. sulph.; OC)
+            # Q_ext,dry function of dry size only
+            # f(RH) function of RH only
+            Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet_v1p0(ceil_lam, r_d, rh_frac)
+            print 'using old method (v1.0) for Q_ext'
+        elif version > 1.0:
+            # MURK, monthly varying based on (amm. nit.; amm. sulph.; OC; BC; sea salt)
+            # Q_ext,dry function of dry size, month
+            # f(RH) function of RH, geometric mean of dry particle distribution, month
+            Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, time)
 
     # Calculate extinction coefficient
     # eqns. 17-18 in Clark et.al. (2008)
     if version == 0.1:
         # v0.1 original aerFO version - now outdated
         # calculate swollen radii and extinction coefficient using it
-        r_m = calc_r_m_original(r_md, rh_frac)
+        r_m = calc_r_m_original(r_d, rh_frac)
         aer_ext_coeff = (eta * FOcon.Q_ext_aer) * np.pi * N_aer * np.power(r_m, 2)
         print 'Using old version 0.1 approach to swell particles'
 
@@ -692,11 +704,11 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
     # If multiple modes are used (e.g. fine, accum, coarse), aer_ext_coeff needs to be calculated for each
     #   i.e. aer_ext_coeff_accum, then summed at the end to make one aer_ext_coeff, with one S used to get the backscatter
     elif version >= 0.2:
-        aer_ext_coeff = (eta * Q_ext) * np.pi * N_aer * np.power(r_md, 2)
+        aer_ext_coeff = eta * Q_ext * np.pi * N_aer * np.power(r_d, 2)
 
     # store all elements into a dictionary for output and diagnostics
     ext_coeff_dict = {'aer_ext_coeff': aer_ext_coeff,
-                'r_md': r_md,
+                'r_d': r_d,
                 'r_g': r_g,
                 'N': N_aer,
                 'Q_ext': Q_ext,
@@ -762,11 +774,11 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
 
         return obs_out
 
-    def calc_r_m_original(r_md, rh_frac, B=FOcon.B_activation_haywood):
+    def calc_r_m_original(r_d, rh_frac, B=FOcon.B_activation_haywood):
 
         """
         Original method to calculate swollen radii size for the FO in version 0.1 of the aerFO
-        :param r_md:
+        :param r_d:
         :param rh_frac:
         :param B: RH activation parameter
         :return:
@@ -785,13 +797,13 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
         # eq 12 - calc rm for RH greater than critical
         r_m = np.ma.ones(rh_frac.shape) - (B / np.ma.log(rh_frac))
         r_m2 = np.ma.power(r_m, 1. / 3.)
-        r_m = np.ma.array(r_md) * r_m2
+        r_m = np.ma.array(r_d) * r_m2
 
         # set rm as 0 where RH is less than crit
         r_m = np.ma.MaskedArray.filled(r_m, [0.0])
         where_lt_crit = np.where(np.logical_or(RH_perc.data < RH_crit_perc, r_m == 0.0))
-        # refill them with r_md
-        r_m[where_lt_crit] = r_md[where_lt_crit]
+        # refill them with r_d
+        r_m[where_lt_crit] = r_d[where_lt_crit]
 
         return r_m
 
@@ -840,7 +852,7 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
         """
 
         # set up S array
-        S = np.empty(FO_dict[aer_mode_i]['r_md'].shape)
+        S = np.empty(FO_dict[aer_mode_i]['r_d'].shape)
         S[:] = np.nan
 
         # Read in the appropriate yearly file data
@@ -859,6 +871,7 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
                 S[t, :] = S_timeseries[t_idx]
 
         return S
+
 
     # ---------------------------
 
@@ -897,10 +910,12 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
     if 'use_S_hourly' in kwargs:
         # use the calculated timeseries of S
         S = extract_S_hourly(FO_dict, time, ceil_lam)
-
     elif 'use_S_constant' in kwargs:
         print 'using a constant S of ' + str(kwargs['use_S_constant'])
         S = kwargs['use_S_constant']
+    elif 'cheat_S_param' in kwargs:
+        print 'using the cheat parameterisation of S!'
+        S = (-0.02214879231039488 * (rh_frac*100.0)) + 54.800201651558169
 
     else:
         # Use parameterised S instead -> either constant or S(RH)
@@ -918,7 +933,7 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
     beta_a = aer_ext_coeff_tot / S
 
     # store all elements into a dictionary for output and diagnostics
-    export_vars = {'beta_a': beta_a,
+    export_vars = {'unnatenuated_backscatter': beta_a,
                 'alpha_a': alpha_a,
                 'aer_ext_coeff_tot': aer_ext_coeff_tot,
                 'wv_ext_coeff': wv_ext_coeff,
@@ -930,7 +945,7 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
     #             'alpha_a': alpha_a,
     #             'aer_ext_coeff_tot': aer_ext_coeff_tot,
     #             'wv_ext_coeff': wv_ext_coeff,
-    #             'r_md': r_md,
+    #             'r_d': r_d,
     #             'r_g':r_g,
     #             'N': N_aer,
     #             'Q_ext': Q_ext,
@@ -966,7 +981,151 @@ def compute_transmission(alpha_extinction, dz):
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 1.1 Q_ext calculation (Q_ext,dry * f(RH))
 
-def calc_Q_ext_wet(ceil_lam, r_md, r_g, rh_frac, mod_time):
+def hourly_obs_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
+    """
+
+    Calculate Q_ext_wet using Q_ext_dry and f(RH) for current wavelength
+    Q_ext,dry and f_RH are monthly varying based on obs at NK and CH for urban and rural site default settings
+    respectively. f_RH also varies with geometric radius.
+
+    EW 15/08/18
+    :param ceil_lam:
+    :param r_d: dry mean volume radius [meters] - needed for Q_ext,dry LUT
+    :param r_g: dry geometric mean radius [meters] - needed for f_RH LUT
+    :param rh_frac: RH [fraction]
+    :param mod_time (array of datetimes) datetimes for the timesteps
+    :return: Q_ext, Q_ext_dry_matrix, f_RH_matrix
+    """
+
+    from ellUtils import nearest, netCDF_read
+
+    # Reading functions
+    def read_hourly_f_RH(mod_time, ceil_lam):
+
+        """
+        Read in the hourly f_RH data from netCDF file for all aerosols
+        EW 21/02/17
+
+        :param mod_time (array of datetimes) datetimes for the timesteps
+        :param ceil_lam: (int) ceilometer wavelength [nm]
+        :return: data = {RH:... f_RH:...}
+
+        """
+
+        # file name and path
+        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        filename = 'monthly_f(RH)_NK_'+str(ceil_lam)+'nm.nc'
+
+        # read data
+        # f_RH = netCDF_read(miedir + filename, vars=['Relative Humidity', 'f(RH) MURK', 'radii_range_nm'])
+        f_RH = netCDF_read(miedir + filename)
+        return f_RH
+
+    def read_hourly_Q_ext_dry(mod_time, ceil_lam):
+
+        """
+        Read in the Q_ext for dry aerosol.
+        EW 21/02/17
+
+        :param mod_time (array of datetimes) datetimes for the timesteps
+        :param ceil_lam: (int) ceilometer wavelength [nm]
+        :return: Q_ext_dry = {radius:... Q_ext_dry:...}
+
+        """
+
+        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        filename = 'NK_all_aerosol_Q_ext_dry_' + str(ceil_lam) + 'nm.npy'
+
+        Q_ext_dry = np.load(miedir + filename).flat[0]
+
+        return Q_ext_dry
+
+    def read_hourly_rel_vol(mod_time, ceil_lam):
+
+        """
+        Read in the relative volume data from netCDF file for all aerosols
+        EW 15/08/18
+
+        :param mod_time (array of datetimes) datetimes for the timesteps
+        :param ceil_lam: (int) ceilometer wavelength [nm]
+        :return: rel_vol (dict): relative volume of each main aerosol component and a time array for time matching
+
+        """
+
+        # file name and path
+        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        filename = 'NK_hourly_aerosol_relative_volume.npy'
+
+        # read data
+        # f_RH = netCDF_read(miedir + filename, vars=['Relative Humidity', 'f(RH) MURK', 'radii_range_nm'])
+        rel_vol = np.load(miedir + filename).flat[0]
+        return rel_vol
+
+    # ---------------------------
+
+    # convert geometric radius to nm to find f(RH)
+    r_g_nm = r_g * 1.0e9
+
+    # height idx range of r_d and RH
+    height_idx_range = r_d.shape[1]
+
+    # read in Q_ext,dry and f(RH) data
+    f_RH = read_hourly_f_RH(mod_time, ceil_lam)
+
+    # Q_ext,dry (radii)
+    # still needs the relative volumes to weight each component though.
+    Q_ext_dry = read_hourly_Q_ext_dry(mod_time, ceil_lam)
+
+    # Read in the relative volume of each species (radii, RH)
+    rel_vol = read_hourly_rel_vol(mod_time, ceil_lam)
+
+    # create matric of Q_ext_dry based on r_d
+    Q_ext_dry_matrix = np.empty(r_d.shape)
+    Q_ext_dry_matrix[:] = np.nan
+    f_RH_matrix = np.empty(r_d.shape)
+    f_RH_matrix[:] = np.nan
+
+    # find Q_ext dry, given the dry radius matrix
+    # find f(RH), given the RH fraction matric
+    for t, time_t in enumerate(mod_time): # time
+
+        _, rel_vol_t_idx, _ = nearest(Q_ext_dry['time'], time_t)
+
+        for h in range(height_idx_range): # height
+
+
+            # 1. Q_ext_dry - volume mixing method as the Q_ext_dry['Q_dry_aer'] values are already calculated for the
+            #   correct r_d (as otherwise the matricies would be enormous (1544, time))
+            _, Q_ext_r_d_idx, _ = nearest(Q_ext_dry['r_v'], r_d[t, h]) # [m]
+
+            Q_ext_dry_matrix[t, h] = \
+                (Q_ext_dry['Q_dry_aer']['(NH4)2SO4'][Q_ext_r_d_idx] * rel_vol['(NH4)2SO4'][rel_vol_t_idx]) + \
+                (Q_ext_dry['Q_dry_aer']['NH4NO3'][Q_ext_r_d_idx] * rel_vol['NH4NO3'][rel_vol_t_idx]) + \
+                (Q_ext_dry['Q_dry_aer']['CORG'][Q_ext_r_d_idx] * rel_vol['CORG'][rel_vol_t_idx]) + \
+                (Q_ext_dry['Q_dry_aer']['CBLK'][Q_ext_r_d_idx] * rel_vol['CBLK'][rel_vol_t_idx]) + \
+                (Q_ext_dry['Q_dry_aer']['NaCl'][Q_ext_r_d_idx] * rel_vol['NaCl'][rel_vol_t_idx])
+
+            # ------------
+
+            # 2. f(RH) (has it's own r_idx that is in units [nm])
+            # LUT uses r_g (geometric) [nm] ToDo should change this to meters...
+            _, r_f_RH_idx, _ = nearest(f_RH['radii_range'], r_g_nm[t, h])
+            _, rh_idx, _ = nearest(f_RH['RH'], rh_frac[t, h])
+            # f_RH_matrix[t, h] = f_RH['f(RH) MURK'][month_idx, r_f_RH_idx, rh_idx]
+
+            f_RH_matrix[t, h] = \
+                (f_RH['f(RH) (NH4)2SO4'][r_f_RH_idx, rh_idx] * rel_vol['(NH4)2SO4'][rel_vol_t_idx]) + \
+                (f_RH['f(RH) NH4NO3'][r_f_RH_idx, rh_idx] * rel_vol['NH4NO3'][rel_vol_t_idx]) + \
+                (f_RH['f(RH) CORG'][r_f_RH_idx, rh_idx] * rel_vol['CORG'][rel_vol_t_idx]) + \
+                (f_RH['f(RH) CBLK'][r_f_RH_idx, rh_idx] * rel_vol['CBLK'][rel_vol_t_idx]) + \
+                (f_RH['f(RH) NaCl'][r_f_RH_idx, rh_idx] * rel_vol['NaCl'][rel_vol_t_idx])
+
+    # calculate Q_ext_wet
+    Q_ext = Q_ext_dry_matrix * f_RH_matrix
+
+    return Q_ext, Q_ext_dry_matrix, f_RH_matrix
+
+def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
     """
 
     Calculate Q_ext_wet using Q_ext_dry and f(RH) for current wavelength
@@ -975,7 +1134,7 @@ def calc_Q_ext_wet(ceil_lam, r_md, r_g, rh_frac, mod_time):
 
     EW 23/02/17
     :param ceil_lam:
-    :param r_md: dry mean volume radius [meters] - needed for Q_ext,dry LUT
+    :param r_d: dry mean volume radius [meters] - needed for Q_ext,dry LUT
     :param r_g: dry geometric mean radius [meters] - needed for f_RH LUT
     :param rh_frac: RH [fraction]
     :param mod_time (array of datetimes) datetimes for the timesteps
@@ -1035,17 +1194,20 @@ def calc_Q_ext_wet(ceil_lam, r_md, r_g, rh_frac, mod_time):
     # cronvert geometric radius to nm to find f(RH)
     r_g_nm = r_g * 1.0e9
 
-    # height idx range of r_md and RH
-    height_idx_range = r_md.shape[1]
+    # height idx range of r_d and RH
+    height_idx_range = r_d.shape[1]
 
     # read in Q_ext_dry and f(RH) look up tables
     f_RH = read_f_RH(mod_time, ceil_lam) # ['f_RH MURK'].shape(month, radii, RH)
     Q_ext_dry = read_Q_ext_dry(mod_time, ceil_lam) #.shape(radii, month)
 
-    # create matric of Q_ext_dry based on r_md
-    Q_ext_dry_matrix = np.empty(r_md.shape)
+    #print 'testing! reducing murk f_RH by 1/3!'
+    #f_RH['f(RH) MURK'] *=0.66
+
+    # create matric of Q_ext_dry based on r_d
+    Q_ext_dry_matrix = np.empty(r_d.shape)
     Q_ext_dry_matrix[:] = np.nan
-    f_RH_matrix = np.empty(r_md.shape)
+    f_RH_matrix = np.empty(r_d.shape)
     f_RH_matrix[:] = np.nan
 
     # find Q_ext dry, given the dry radius matrix
@@ -1056,8 +1218,8 @@ def calc_Q_ext_wet(ceil_lam, r_md, r_g, rh_frac, mod_time):
         for h in range(height_idx_range): # height
 
             # Q_ext_dry
-            # LUT uses r_md (volume) [meters]
-            _, r_Q_idx, _ = nearest(Q_ext_dry['radius_m'], r_md[t, h])
+            # LUT uses r_d (volume) [meters]
+            _, r_Q_idx, _ = nearest(Q_ext_dry['radius_m'], r_d[t, h])
             Q_ext_dry_matrix[t, h] = Q_ext_dry['Q_ext_dry'][r_Q_idx, month_idx]
 
             # f(RH) (has it's own r_idx that is in units [nm])
@@ -1071,8 +1233,7 @@ def calc_Q_ext_wet(ceil_lam, r_md, r_g, rh_frac, mod_time):
 
     return Q_ext, Q_ext_dry_matrix, f_RH_matrix
 
-
-def calc_Q_ext_wet_v1p0(ceil_lam, r_md, rh_frac):
+def calc_Q_ext_wet_v1p0(ceil_lam, r_d, rh_frac):
     """
     Calculate Q_ext_wet using Q_ext_dry and f(RH) for current wavelength
 
@@ -1081,7 +1242,7 @@ def calc_Q_ext_wet_v1p0(ceil_lam, r_md, rh_frac):
 
     EW 23/02/17
     :param ceil_lam:
-    :param r_md:
+    :param r_d:
     :param RH:
     :return:
     """
@@ -1148,16 +1309,16 @@ def calc_Q_ext_wet_v1p0(ceil_lam, r_md, rh_frac):
     f_RH = read_f_RH(ceil_lam)
     Q_ext_dry = read_Q_dry_ext(ceil_lam)
 
-    # create matric of Q_ext_dry based on r_md
-    Q_ext_dry_matrix = np.empty(r_md.shape)
+    # create matric of Q_ext_dry based on r_d
+    Q_ext_dry_matrix = np.empty(r_d.shape)
     Q_ext_dry_matrix[:] = np.nan
-    f_RH_matrix = np.empty(r_md.shape)
+    f_RH_matrix = np.empty(r_d.shape)
     f_RH_matrix[:] = np.nan
 
     # find Q_ext dry, given the dry radius matrix
-    for i in range(r_md.shape[0]):
-        for j in range(r_md.shape[1]):
-            idx = nearest(Q_ext_dry['radius'], r_md[i, j])[1]
+    for i in range(r_d.shape[0]):
+        for j in range(r_d.shape[1]):
+            idx = nearest(Q_ext_dry['radius'], r_d[i, j])[1]
             Q_ext_dry_matrix[i, j] = Q_ext_dry['Q_ext'][idx]
 
     for i in range(rh_frac.shape[0]):

@@ -42,7 +42,7 @@ N0_aer = 4.461e9 # 0.04 - 0.07 um # paper 1 clearFlo winter accum range
 N0_aer_urban = 1.31104e9 # paper 2 (accum range of 80 - 800 nm)
 # N0_aer = 6.824e9 #4.0e9 #8.0e9 # (N0) standard number density of aerosol [m-3] 0.02 - 0.7 um # ClearfLo winter
 m0_aer = 1.8958e-8  # (m0) standard mass mixing ratio of the aerosol [kg kg-1]
-m0_aer_urban = 1.8958e-8 # paper 2 pm10 obs average at NK 01/01/2010 - 31/07/2016 [kg kg-1]
+m0_aer_urban = 1.8958e-8 # paper 2 pm10 obs average at NK 01/01/2010 - 31/07/2016 [kg kg-1] # correct units
 # m0_aer_urban = 24.0e-9 # paper 2 pm10 obs average at NK 01/01/2010 - 31/07/2016 [kg m-3]
 
 

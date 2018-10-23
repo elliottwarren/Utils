@@ -18,7 +18,7 @@ r0_clark = 1.6e-7  # radius of a 'standard' aerosol particle [m]
 r0_haywood = 1.1e-7 # update from Haywood
 # r0_urban = 1.87e-7 # paper 2 (accum range of 80 - 1000 nm)
 r0_urban = 1.59e-7 # paper 2 (accum range of 80 - 800 nm)
-r0_urban = 1.48e-7 # paper 2 (accum range of 80 - 700 nm)
+# r0_urban = 1.48e-7 # paper 2 (accum range of 80 - 700 nm)
 
 # p_aer = 1./6 # (p) power used to represent the variation in aerosol
 # particle size with mixing ratio
@@ -37,8 +37,8 @@ B_activation_haywood = 0.14
 # N0 of 4461 cm-3 taken as total from clearflo winter, for particles between 0.04 and 0.7 microns,
 #   the range was interpreted as such from figure 13 of Harrison et al., 2012 MR and is the currently the default
 # N0_aer = 8.0e9
-N0_aer = 4.461e9 # 0.04 - 0.07 um
-# N0_aer_urban = 1.31182e9 # paper 2 (accum range of 80 - 1000 nm)
+N0_aer = 4.461e9 # 0.04 - 0.07 um # paper 1 clearFlo winter accum range
+# N0_aer_urban = 1.31182e9 # paper 2 (accum range of 80 - 1000 nm) # test
 N0_aer_urban = 1.31104e9 # paper 2 (accum range of 80 - 800 nm)
 # N0_aer = 6.824e9 #4.0e9 #8.0e9 # (N0) standard number density of aerosol [m-3] 0.02 - 0.7 um # ClearfLo winter
 m0_aer = 1.8958e-8  # (m0) standard mass mixing ratio of the aerosol [kg kg-1]

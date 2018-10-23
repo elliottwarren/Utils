@@ -636,18 +636,19 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
         N_aer = N0 * np.power((q_aer_kg_kg / m0), 1.0 - (3.0 * p))
         r_d = r0 * np.power((q_aer_kg_kg / m0), p)
 
-    else:
+    #else:
+        # overwrite N_aer and r_d if obs_N or obs_r are in **kwargs
         # Number concentration [m-3]
         # Read in N_aer from observations and time match to existing time resolution
-        if 'obs_N' in kwargs.keys():
-            N_aer_cm3 = read_obs_aer(rh_frac, time, 'Ntot_'+aer_mode) # [cm-3]
-            N_aer = N_aer_cm3 *1e6 # convert to [m-3]
+    if 'obs_N' in kwargs.keys():
+        N_aer_cm3 = read_obs_aer(rh_frac, time, 'Ntot_'+aer_mode) # [cm-3]
+        N_aer = N_aer_cm3 *1e6 # convert to [m-3]
 
-        # Dry mean radius of bulk aerosol (this radius is the same as the volume mean radius)
-        # mean radius (by volume, and it is not the geometric radius)
-        if 'obs_r' in kwargs.keys():
-            D_d = read_obs_aer(rh_frac, time, 'Dv_'+aer_mode) # Diameter [nm]
-            r_d = D_d/2.0 * 1e-9 # radius [m]
+    # Dry mean radius of bulk aerosol (this radius is the same as the volume mean radius)
+    # mean radius (by volume, and it is not the geometric radius)
+    if 'obs_r' in kwargs.keys():
+        D_d = read_obs_aer(rh_frac, time, 'Dv_'+aer_mode) # Diameter [nm]
+        r_d = D_d/2.0 * 1e-9 # radius [m]
 
     # Geometric mean radius of bulk aerosol [meters]
     #   derived from a linear fit between observed r_d (volume mean) and r_g
@@ -858,7 +859,7 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
         # Read in the appropriate yearly file data
         Sfilename = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/MorningBL/data/npy/' \
                     'S_timeseries/NK_SMPS_APS_PM10_withSoot_' + time[0].strftime('%Y') + '_' + str(
-            ceil_lam) + 'nm.npy'
+            ceil_lam) + 'nm_freshOCGF_hysteresis_shapecorr.npy'
         data = np.load(Sfilename).flat[0]
         S_time = data['met']['time']
         S_timeseries = data['optics']['S']
@@ -926,7 +927,9 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
         elif version >= 1.1:
             # Read in from look up table (monthly varying, for either an urban or rural site)
             # hold it constant for now, until the climatology has been made
-            S = get_S_climatology(time, rh_frac, ceil_lam)
+            # S = get_S_climatology(time, rh_frac, ceil_lam) - old method
+            print 'new RH param with hys and shapecorr'
+            S = (rh_frac * 63.7323210) - 0.0404945445
 
     # Calculate backscatter using a constant lidar ratio
     # ratio between PARTICLE extinction and backscatter coefficient (not total extinction!).
@@ -1816,7 +1819,7 @@ def read_wxt_obs(day, time, z):
     wxt_obs['Tair'] = wxt_obs['Tair'][t_idx] # [degC]
     wxt_obs['press'] = wxt_obs['press'][t_idx] # [hPa]
     wxt_obs['time'] = wxt_obs['time'][t_idx]
-    wxt_obs['rawtime'] = wxt_obs['rawtime'][t_idx]
+    # wxt_obs['rawtime'] = wxt_obs['rawtime'][t_idx]
 
     # overwrite t_idx locations where t_diff is too high with nans
     # only keep t_idx values where the difference is below 1 hour
@@ -1827,7 +1830,7 @@ def read_wxt_obs(day, time, z):
     wxt_obs['press'][bad] = np.nan
 
     wxt_obs['time'][bad] = np.nan
-    wxt_obs['rawtime'][bad] = np.nan
+    # wxt_obs['rawtime'][bad] = np.nan
 
     # create RH_frac using RH data
     wxt_obs['RH_frac'] = wxt_obs['RH'] / 100.0
@@ -2044,7 +2047,7 @@ def read_all_ceil_obs(day, site_bsc, ceilDatadir, fType='', timeMatch=None, cali
 # older versions
 
 # read ins ceil data and strips it down to hourly values accoridng to mod_data
-def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1):
+def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1, **kwargs):
 
     """
     Read in ceilometer backscatter, time, height and SNR data and strip the hours out of it.
@@ -2145,7 +2148,7 @@ def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1)
             bsc_obs[site] = {}
 
             # read backscatter data
-            data_obs, ceilLevel = ceil.netCDF_read_BSC(bsc_fname)
+            data_obs, ceilLevel = ceil.netCDF_read_BSC(bsc_fname, **kwargs)
 
             # find nearest time in ceil time
             # pull out ALL the nearest time idxs and differences

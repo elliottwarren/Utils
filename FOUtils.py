@@ -1858,103 +1858,6 @@ def read_wxt_obs(day, time, z):
 # new and improved versions (use this one!)
 # if timeMatch is provided, it will strip ceil obs data down
 # This one is specific for BSC
-def read_all_ceil_BSC(day, site_bsc, ceilDatadir, timeMatch=None, calib=True):
-
-    """
-    Read in ceilometer backscatter, time, height and SNR data and strip the hours out of it.
-    Calibrate data if requested
-
-    :param day:
-    :param site_bsc:
-    :param ceilDatadir:
-    :param mod_data:
-    :param calib:
-    :return: bsc_obs
-    """
-
-    import pickle
-
-    #ToDo very inefficient application, needs reworking slightly
-    def calibrate_data(bsc_obs, site):
-
-        """
-        calibrate the bsc observations
-
-        :param bsc_obs:
-        :param site:
-        :return:
-        """
-
-        calib_path = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/clearFO/data/' \
-                     'Calibrations_for_LUMO_Ceilometers/'
-
-        filename = calib_path + site + '_window_trans_daily_cpro.pickle'
-
-        # sort site name out (is in CL31-A_BSC_KSS45W format, but needs to be CL31-A_KSS45W
-
-        # load calibration data (using pickle)
-        with open(filename, 'rb') as handle:
-            window_trans_daily = pickle.load(handle)
-
-        for i, time_i in zip(np.arange(len(bsc_obs[site]['time'])), bsc_obs[site]['time']):
-            # find date in window_trans_daily
-            time_idx = np.where(np.array(window_trans_daily['dates']) == time_i.date())
-
-            # apply calibration to bsc data
-            bsc_obs[site]['backscatter'][i, :] *= window_trans_daily['c_pro'][time_idx]
-
-        return bsc_obs
-
-    # contains all the sites time-upscaled data
-    bsc_obs = {}
-
-    for site, height in site_bsc.iteritems():
-
-        # create filename
-        bsc_fname, site_id = create_filename(ceilDatadir, site, day, fType='BSC')
-
-        # check if data is there, else skip it
-        if os.path.exists(bsc_fname):
-
-            # this sites time-upscaled data
-            bsc_obs[site] = {}
-
-            # read backscatter data
-            data_obs, ceilLevel = ceil.netCDF_read_BSC(bsc_fname)
-
-            # time match model data?
-            # if timeMatch has data, then time match against it
-            if timeMatch != None:
-
-                # find nearest time in ceil time
-                # pull out ALL the nearest time idxs and differences
-                t_idx = np.array([eu.nearest(data_obs['time'], t)[1] for t in timeMatch[site_id]['time']])
-                t_diff = np.array([eu.nearest(data_obs['time'], t)[2] for t in timeMatch[site_id]['time']])
-
-            else:
-                # extract the lot
-                t_idx = np.arange(len(data_obs['backscatter']))
-
-
-            # extract data
-            # for var, data in data_obs.iteritems():
-            bsc_obs[site]['SNR'] = data_obs['SNR'][t_idx, :]
-            bsc_obs[site]['backscatter'] = data_obs['backscatter'][t_idx, :]
-            bsc_obs[site]['height'] = data_obs['height'] + height
-            bsc_obs[site]['time'] = [data_obs['time'][i] for i in t_idx]
-
-            # calibrate data
-            if calib == True:
-                bsc_obs = calibrate_data(bsc_obs, site)
-
-            # overwrite t_idx locations where t_diff is too high with nans
-            # only keep t_idx values where the difference is below 5 minutes
-            bad = np.array([abs(i.days * 86400 + i.seconds) > 10 * 60 for i in t_diff])
-
-            bsc_obs[site]['SNR'][bad, :] = np.nan
-            bsc_obs[site]['backscatter'][bad, :] = np.nan
-
-    return bsc_obs
 
 # Tried to make a very general version for use with any LUMO ceilometer netCDF file
 def read_all_ceil_obs(day, site_bsc, ceilDatadir, fType='', timeMatch=None, calib=True):
@@ -2032,7 +1935,7 @@ def read_all_ceil_obs(day, site_bsc, ceilDatadir, fType='', timeMatch=None, cali
 
             # calibrate data
             if (fType == 'BSC') & (calib == True):
-                ceil_obs = calibrate_data(ceil_obs, site)
+                ceil_obs = calibrate_BSC_data(ceil_obs, site)
 
             # # overwrite t_idx locations where t_diff is too high with nans
             # # only keep t_idx values where the difference is below 10 minutes
@@ -2061,40 +1964,8 @@ def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1,
     import os
     import pickle
 
-    def calibrate_data(bsc_obs, site, day):
-
-        """
-        calibrate the bsc observations
-
-        :param bsc_obs:
-        :param site:
-        :return:
-        """
-
-        # site id (short) and site str in filename
-        split = site.split('_')
-        site_id = split[-1]
-        cal_site_name = split[0] + '_CAL_' + split[-1]
-
-        # L2 is the interpolated calibration data (vs time, window transmission or block avg.)
-        calibdir = 'C:/Users/Elliott/Documents/PhD Reading/LUMO - Sensor network/calibration/data/L2/'
-        filepath = calibdir + cal_site_name + '_' + day.strftime('%Y') + '.nc'
-
-        calib_data = eu.netCDF_read(filepath)
-
-        # get correct calibration idx, given the bsc date
-        time_idx = np.where(calib_data['time'] == day)[0][0]
-
-        # apply calibration to bsc data
-        bsc_obs[site]['backscatter'] *= calib_data['c_pro'][time_idx]
-
-        # set timezone as UTC
-        #bsc_obs[site]['time'] = np.array([i.replace(tzinfo=tz.gettz('UTC')) for i in bsc_obs[site]['time']])
-
-        return bsc_obs
-
     #ToDo very inefficient application, needs reworking slightly
-    def calibrate_data_v1p0(bsc_obs, site):
+    def calibrate_BSC_data_v1p0(bsc_obs, site):
 
         """
         calibrate the bsc observations
@@ -2158,7 +2029,7 @@ def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1,
 
             # extract data
             # for some reason, the L1 'height' is not corrected to be above ground and is basically the range
-            #   whereas L0 height is corrected to be above ground
+            #   whereas L0 height is corrected to be above ground. Therefore correct L1 data if it has been read in.
             bsc_obs[site]['SNR'] = data_obs['SNR'][t_idx, :]
             bsc_obs[site]['backscatter'] = data_obs['backscatter'][t_idx, :]
             bsc_obs[site]['time'] = [data_obs['time'][i] for i in t_idx]
@@ -2169,9 +2040,9 @@ def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1,
             if calib == True:
             
                 if version <= 1.0:
-                    bsc_obs = calibrate_data_v1p0(bsc_obs, site)
+                    bsc_obs = calibrate_BSC_data_v1p0(bsc_obs, site)
                 else:
-                    bsc_obs = calibrate_data(bsc_obs, site, day)
+                    bsc_obs = calibrate_BSC_data(bsc_obs, site, day)
 
             # overwrite t_idx locations where t_diff is too high with nans
             # only keep t_idx values where the difference is below 5 minutes
@@ -2196,7 +2067,7 @@ def read_ceil_obs_all(day, site_bsc, ceilDatadir, calib=True, version=1.1):
     import os
     import pickle
 
-    def calibrate_data(bsc_obs, site, day):
+    def calibrate_BSC_data(bsc_obs, site, day):
 
         """
         calibrate the bsc observations
@@ -2229,7 +2100,7 @@ def read_ceil_obs_all(day, site_bsc, ceilDatadir, calib=True, version=1.1):
         return bsc_obs
 
     # ToDo very inefficient application, needs reworking slightly
-    def calibrate_data_v1p0(bsc_obs, site):
+    def calibrate_BSC_data_v1p0(bsc_obs, site):
 
         """
         calibrate the bsc observations
@@ -2297,244 +2168,14 @@ def read_ceil_obs_all(day, site_bsc, ceilDatadir, calib=True, version=1.1):
             if calib == True:
 
                 if version <= 1.0:
-                    bsc_obs = calibrate_data_v1p0(bsc_obs, site)
+                    bsc_obs = calibrate_BSC_data_v1p0(bsc_obs, site)
                 else:
-                    bsc_obs = calibrate_data(bsc_obs, site, day)
-
-    return bsc_obs
-
-# reads in all ceil data for the day and does not strip down
-def read_ceil_obs_all_old(day, site_bsc, ceilDatadir, calib=True):
-
-    """
-    Read in ALL ceilometer backscatter, time, height and SNR data. No stripping down
-
-    :param day:
-    :param ceilDatadir:
-    :return: data_obs: dictionary
-    """
-
-    import pickle
-
-    def calibrate_data(bsc_obs, site):
-
-        """
-        calibrate the bsc observations
-
-        :param bsc_obs:
-        :param site:
-        :return:
-        """
-
-        calib_path = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/clearFO/data/' \
-                     'Calibrations_for_LUMO_Ceilometers/'
-
-        filename = calib_path + site + '_window_trans_daily_cpro.pickle'
-
-        # sort site name out (is in CL31-A_BSC_KSS45W format, but needs to be CL31-A_KSS45W
-
-        # load calibration data (using pickle)
-        with open(filename, 'rb') as handle:
-            window_trans_daily = pickle.load(handle)
-
-        for i, time_i in zip(np.arange(len(bsc_obs[site]['time'])), bsc_obs[site]['time']):
-            # find date in window_trans_daily
-            time_idx = np.where(np.array(window_trans_daily['dates']) == time_i.date())
-
-            # apply calibration to bsc data
-            bsc_obs[site]['backscatter'][i, :] *= window_trans_daily['c_pro'][time_idx]
-
-        return bsc_obs
-
-    # contains all the sites time-upscaled data
-    bsc_obs = {}
-
-    for site, height in site_bsc.iteritems():
-
-        # this sites time-upscaled data
-        bsc_obs[site] = {}
-
-        # site id (short) and site str in filename
-        split = site.split('_')
-        site_id = split[-1]
-        bsc_site_name = split[0] + '_BSC_' + split[-1]
-
-        # date for the main day
-        doyStr = day.strftime('%Y%j')
-
-        # get filename
-        bsc_fname = ceilDatadir + bsc_site_name + '_' + doyStr + '_15sec.nc'
-
-        # read backscatter data
-        bsc_obs[site] = ceil.netCDF_read_BSC(bsc_fname)
-
-        # extract data
-        # for var, data in data_obs.iteritems():
-        bsc_obs[site]['height'] += height
-
-        # calibrate data
-        if calib == True:
-            bsc_obs = calibrate_data(bsc_obs, site)
+                    bsc_obs = calibrate_BSC_data(bsc_obs, site, day)
 
     return bsc_obs
 
 # ----------------
 
-# fast version, copy and pasted from CCW30
-def read_ceil_CLD_obs(day, site_bsc, ceilDatadir, mod_data, timeMatchMod=False, dayExtract=False):
-
-    """
-    Read in raw ceilometer cloud, time and height data and strip the hours out of it.
-
-    #ToDo currently no SNR or time QAQC
-
-    :param day:
-    :param ceilDatadir:
-    :return: data_obs: [dictionary]
-    """
-
-    import os
-
-    # contains all the sites time-upscaled data
-    bsc_obs = {}
-
-    for site, height in site_bsc.iteritems():
-
-        # site id (short) and site str in filename
-        split = site.split('_')
-        site_id = split[-1]
-        bsc_site_name = split[0] + '_CLD_' + split[-1]
-
-        # date for the main day
-        doyStr = day.strftime('%Y%j')
-
-        # get filename
-        bsc_fname = ceilDatadir + bsc_site_name + '_' + doyStr + '_15sec.nc'
-
-        # check if data is there, else skip it
-        if os.path.exists(bsc_fname):
-
-            # this sites time-upscaled data
-            bsc_obs[site] = {}
-
-            # read cloud data
-            # data_obs = ceil.netCDF_read_CLD(bsc_fname)
-            data_obs = ceil.netCDF_read_ceil(bsc_fname)
-
-
-            if timeMatchMod == True:
-                # find nearest time in ceil time
-                # pull out ALL the nearest time idxs and differences
-                # the mod_data time is the same for all sites so can therefore use any site
-                t_idx = np.array([eu.nearest(data_obs['time'], t)[1] for t in mod_data[site_id]['time']])
-                t_diff = np.array([eu.nearest(data_obs['time'], t)[2] for t in mod_data[site_id]['time']])
-
-
-            elif dayExtract == True:
-
-                # get just day part of date
-                day_part = np.array([i.date() for i in data_obs['time']])
-                t_idx = np.where(day_part == day.date())[0]
-
-            else:
-
-                # extract the lot
-                t_idx = np.arange(len(data_obs['CLD_Height_L1']))
-
-            # extract data based on t_idx
-            # for var, data in data_obs.iteritems():
-            bsc_obs[site]['CLD_Height_L1'] = data_obs['CLD_Height_L1'][t_idx] + height
-
-            bsc_obs[site]['height'] = data_obs['height'] + height
-            bsc_obs[site]['time'] = [data_obs['time'][i] for i in t_idx]
-
-            # overwrite t_idx locations where t_diff is too high with nans
-            # only keep t_idx values where the difference is below 5 minutes
-            #bad = np.array([abs(i.days * 86400 + i.seconds) > 10 * 60 for i in t_diff])
-            #
-            #bsc_obs[site]['backscatter'][bad, :] = np.nan
-
-    return bsc_obs
-
-# this is the better version atm
-def read_ceil_CCW30_obs(day, site_bsc, ceilDatadir, mod_data, timeMatchMod=False, dayExtract=False):
-
-    """
-    Read in ceilometer cloud, time and height data and strip the hours out of it.
-
-    #ToDo currently no SNR or time QAQC
-
-    :param day:
-    :param ceilDatadir:
-    :return: data_obs: [dictionary]
-    """
-
-    import os
-
-    # contains all the sites time-upscaled data
-    bsc_obs = {}
-
-    for site, height in site_bsc.iteritems():
-
-        # site id (short) and site str in filename
-        split = site.split('_')
-        site_id = split[-1]
-        bsc_site_name = split[0] + '_CCW30_' + split[-1]
-
-        # date for the main day
-        doyStr = day.strftime('%Y')
-
-        # get filename
-        bsc_fname = ceilDatadir + bsc_site_name + '_' + doyStr + '_15min.nc'
-
-        # check if data is there, else skip it
-        if os.path.exists(bsc_fname):
-
-            # this sites time-upscaled data
-            bsc_obs[site] = {}
-
-            # read cloud data
-            data_obs = ceil.netCDF_read_CCW30(bsc_fname)
-
-            if timeMatchMod == True:
-                # find nearest time in ceil time
-                # pull out ALL the nearest time idxs and differences
-                # the mod_data time is the same for all sites so can therefore use any site
-                t_idx = np.array([eu.nearest(data_obs['time'], t)[1] for t in mod_data[site_id]['time']])
-                t_diff = np.array([eu.nearest(data_obs['time'], t)[2] for t in mod_data[site_id]['time']])
-
-
-            elif dayExtract == True:
-
-                # get just day part of date
-                day_part = np.array([i.date() for i in data_obs['time']])
-                t_idx = np.where(day_part == day.date())[0]
-
-            else:
-
-                # extract the lot
-                t_idx = np.arange(len(data_obs['CBH']))
-
-            # extract data based on t_idx
-            # for var, data in data_obs.iteritems():
-            bsc_obs[site]['CBH'] = data_obs['CBH'][t_idx]
-            bsc_obs[site]['CC_low'] = data_obs['CC_low'][t_idx]
-            bsc_obs[site]['CC_medium'] = data_obs['CC_medium'][t_idx]
-            bsc_obs[site]['CC_high'] = data_obs['CC_high'][t_idx]
-
-            bsc_obs[site]['height'] = data_obs['height'] + height
-            bsc_obs[site]['time'] = [data_obs['time'][i] for i in t_idx]
-
-            # overwrite t_idx locations where t_diff is too high with nans
-            # only keep t_idx values where the difference is below 5 minutes
-            #bad = np.array([abs(i.days * 86400 + i.seconds) > 10 * 60 for i in t_diff])
-            #
-            #bsc_obs[site]['backscatter'][bad, :] = np.nan
-
-    return bsc_obs
-
-
-# ----------------------
 
 # read in helper functions
 

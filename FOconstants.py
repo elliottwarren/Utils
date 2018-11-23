@@ -74,11 +74,9 @@ model_resolution = {'UKV': '1p5km',
 
 #site_bsc = {'CL31-A_BSC_KSS45W': 64.3, 'CL31-B_BSC_RGS': 28.1 - 19.4, 'CL31-C_BSC_MR': 32.0 - 27.5,
 #            'CL31-D_BSC_NK': 27.0 - 23.2}
-#site_bsc = {'CL31-A_BSC_IMU': 72.8, 'CL31-B_BSC_RGS': 28.1 - 19.4, 'CL31-C_BSC_MR': 32.0 - 27.5,
-#            'CL31-D_BSC_NK': 27.0 - 23.2}
 
 site_bsc = {'CL31-A_IMU': 72.8, 'CL31-B_RGS': 28.1 - 19.4, 'CL31-C_MR': 32.0 - 27.5,
-            'CL31-D_NK': 27.0 - 23.2, 'CL31-E_NK': 27.0 - 23.2,'CL31-A_KSS45W': 64.3}
+            'CL31-D_NK': 27.0 - 23.2, 'CL31-E_NK': 27.0 - 23.2,'CL31-A_KSS45W': 64.3 - 31.4}
 
 #site_bsc = {'CL31-B_RGS': 28.1 - 19.4, 'CL31-C_MR': 32.0 - 27.5,
 #            'CL31-D_NK': 27.0 - 23.2, 'CL31-A_KSS45W': 64.3}

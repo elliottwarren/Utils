@@ -15,13 +15,17 @@ import os
 from dateutil import tz
 
 import datetime as dt
-import ellUtils as eu
-import ceilUtils as ceil
+from ellUtils import ellUtils as eu
+from ceilUtils import ceilUtils as ceil
 from forward_operator import FOconstants as FOcon
+
+#testing tools
+#from timeit import default_timer as timer
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 1. FORWARD OPERATOR
 
+# 1.1 aerFO using UKV data for a single site.
 # Attenuated backscatter using aerosol extinction coeff and transmission
 # Main one to call!
 def forward_operator(aer_mod, rh_frac, r_v, mod_rho, z_mod,  ceil_lam, version, mod_time,
@@ -342,6 +346,9 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
 
     return FO_dict
 
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# 1.2 Observation aerFO (one height level)
+
 def forward_operator_from_obs(day, ceil_lam, version, r0 = FOcon.r0_haywood, p = FOcon.p_aer,
                  N0=FOcon.N0_aer, m0 = FOcon.m0_aer, eta = FOcon.eta, aer_modes=['accum'],
                  **kwargs):
@@ -454,6 +461,246 @@ def forward_operator_from_obs(day, ceil_lam, version, r0 = FOcon.r0_haywood, p =
 
     # update FO_dict with earlier derived obs
     FO_dict.update(wxt_obs)
+
+    return FO_dict
+
+def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, version,
+                   time, aer_modes, **kwargs):
+
+    """
+    Compute extinction coefficient (aerosol extinction + water vapour extinction)
+
+    :param q_aer: aerosol mass mizing ratio [micrograms kg-1]
+    :param rh_frac: relative humidity [ratio/dimensionless]
+    :param time: (array of datetimes) datetimes for each timestep
+    :return: alpha_a: total extinction coefficient
+    :return: beta_a: UNattenuated backscatter
+
+    Most of the function calculates the AEROSOL extinction coefficient and relevent variables (particle extnction
+    efficiency). Last part also calculates water vapour extinction coefficient (same as absorption coefficient
+    as water vapour scattering is negligable, given the tiny size of vapour gas (think its ~1e-28)
+
+    """
+
+    def read_obs_aer(rh_frac, time, dN_key):
+        """
+        Read in observed total number for the accum range.
+        :param rh_frac:
+        :param mod_time:
+        :param dN_key: the key in dN for which data to extract
+        """
+
+        filedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/MorningBL/' + \
+                  'data/npy/number_distribution/'
+
+        filepath = filedir + 'NK_APS_SMPS_Ntot_Dv_fine_acc_coarse_' + time[0].strftime('%Y') + '_80-700nm.npy'
+        data_in = np.load(filepath).flat[0]
+        # delete accum range variable
+        if 'accum_range' in data_in:
+            del data_in['accum_range']
+        # ['Ntot_fine', 'Dn_fine', 'Ntot', 'time', 'Ntot_accum', 'Dn_accum']
+
+        t_idx = np.array([eu.nearest(data_in['time'], t)[1] for t in time]) # time index
+        t_diff = np.array([eu.nearest(data_in['time'], t)[2] for t in time]) # dt.timedelta() showing how close time is
+
+        # pull out data
+        var = data_in[dN_key][t_idx]
+        # a = {key: item[t_idx] for key, item in dN.iteritems()} # all data
+
+        # overwrite t_idx locations where t_diff is too high with nans
+        # only keep t_idx values where the difference is below 1 hour
+        bad = np.array([abs(i.days * 86400 + i.seconds) > 60 * 60 for i in t_diff])
+
+        # for key in dN.iterkeys(): # all data
+        #     dN[key][bad] = np.nan
+
+        var[bad] = np.nan
+
+        # As dN is only surface N values, repeat these values to all heights so the shape of obs_out == rh_frac
+        obs_out = np.transpose(np.tile(var, (rh_frac.shape[1], 1)))
+
+        return obs_out
+
+    def calc_r_m_original(r_d, rh_frac, B=FOcon.B_activation_haywood):
+
+        """
+        Original method to calculate swollen radii size for the FO in version 0.1 of the aerFO
+        :param r_d:
+        :param rh_frac:
+        :param B: RH activation parameter
+        :return:
+        """
+
+        # convert units to percentage
+        RH_perc = rh_frac * 100.0
+
+        # rm is the mean volume radius. Eqn. 12 in Clark et.al. (2008)
+        # "When no activated particles are present an analytic solution for rm" is
+        RH_crit_perc = FOcon.RH_crit
+        # mask over values less than critical
+        RH_ge_RHcrit = np.ma.masked_less(RH_perc, RH_crit_perc)
+
+        # calculate wet mean radius
+        # eq 12 - calc rm for RH greater than critical
+        r_m = np.ma.ones(rh_frac.shape) - (B / np.ma.log(rh_frac))
+        r_m2 = np.ma.power(r_m, 1. / 3.)
+        r_m = np.ma.array(r_d) * r_m2
+
+        # set rm as 0 where RH is less than crit
+        r_m = np.ma.MaskedArray.filled(r_m, [0.0])
+        where_lt_crit = np.where(np.logical_or(RH_perc.data < RH_crit_perc, r_m == 0.0))
+        # refill them with r_d
+        r_m[where_lt_crit] = r_d[where_lt_crit]
+
+        return r_m
+
+    def get_S_climatology(time, rh_frac, ceil_lam):
+
+        """
+        Create the S array from the climatology (month, RH_fraction) given the month and RH
+        :param time:
+        :param rh_frac:
+        :param ceil_lam (int): ceilometer wavelength [nm]
+        :return: S (time, height):
+        """
+
+        # 1. Read in the data
+        filename = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/' + \
+                   'S_climatology_NK_SMPS_APS_' + str(ceil_lam) + 'nm.npy'
+
+        data = np.load(filename).flat[0]
+        S_clim = data['S_climatology']
+        S_RH_frac = data['RH_frac']
+
+        # 2. Create S array given the time and RH
+
+        # get height range from rh_frac
+        height_idx_range = rh_frac.shape[1]
+
+        # find S array
+        S = np.empty(rh_frac.shape)
+        S[:] = np.nan
+        for t, time_t in enumerate(time):  # time
+            # get month idx (e.g. idx for 5th month = 4)
+            month_idx = time_t.month - 1
+            for h in range(height_idx_range):  # height
+
+                # find RH idx for this month, and put the element into the S array
+                _, rh_idx, _ = eu.nearest(S_RH_frac, rh_frac[t, h])
+                S[t, h] = S_clim[month_idx, rh_idx]
+
+        return S
+
+    def extract_S_hourly(FO_dict, time, ceil_lam):
+
+        """
+        Read in and extract S calculated for that hour from calc_lidar_ratio_general.py on the linux system
+        :return: S .shape(time, height): lidar ratio
+        """
+
+        # set up S array
+        S = np.empty(FO_dict[aer_mode_i]['r_d'].shape)
+        S[:] = np.nan
+
+        # Read in the appropriate yearly file data
+        Sfilename = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/MorningBL/data/npy/' \
+                    'S_timeseries/NK_SMPS_APS_PM10_withSoot_' + time[0].strftime('%Y') + '_' + str(
+            ceil_lam) + 'nm_freshOCGF_hysteresis_shapecorr.npy'
+        data = np.load(Sfilename).flat[0]
+        S_time = data['met']['time']
+        S_timeseries = data['optics']['S']
+
+        # fill S array
+        for t, time_t in enumerate(time):  # time
+            _, t_idx, diff = eu.nearest(S_time, time_t)
+            # if the difference is less than an hour, extract the value (so discard differences exactly equal to 1 hour)
+            if diff.total_seconds() < 60 * 60:
+                S[t, :] = S_timeseries[t_idx]
+
+        return S
+
+
+    # ---------------------------
+
+    # prepare the FO_dict to store all the outputted variables together
+    FO_dict={}
+
+    # calculate extinction coefficients for each aerosol mode separately
+    for aer_mode_i in aer_modes:
+        FO_dict[aer_mode_i] = calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, version,
+                                time, aer_mode_i, **kwargs)
+
+    # calculate the water vapour extinction coefficient
+    # T = 16.85 degC, q = 0.01 kg kg-1; p = 1100 hPa
+    # wv_ext_coeff = mass_abs * mod_rho * mod_r_v
+
+    if ceil_lam == 905:
+        # mass absorption of water vapour [m2 kg-1] for water vapour extinction coefficient
+        # script to calculate mass aborption = htfrtc_optprop_gas_plot_elliott.py
+        # gaussian weighted average (mean = 905, FWHM = 4) = 0.016709242714125036 # (current) should be used for CL31 (kotthaus et al., 2016)
+        # gaussian weighted average (mean = 905, FWHM = 8) = 0.024222946249630242 # (test) test sensitivity to FWHM
+        # gaussian weighted average (mean = 900, FWHM = 4) = 0.037273493204864103 # (highest wv abs for a central wavelength between 895 - 915)
+        wv_ext_coeff = 0.016709242714125036 * rho * r_v
+    else:
+        raise ValueError('ceilometer wavelength != 905 nm, need to calculate a new gaussian average to \n'
+                         'calculate water vapour extinction coefficient for this new wavelength!')
+
+    # # total extinction coefficient
+    # alpha_a = aer_ext_coeff + wv_ext_coeff
+
+    # total aerosol extinction coefficient
+    aer_ext_coeff_tot = np.sum(np.array([FO_dict[key]['aer_ext_coeff'] for key in aer_modes]), axis=0)
+    # total extinction
+    alpha_a = aer_ext_coeff_tot + wv_ext_coeff
+
+    # Get lidar ratio (S)
+    if 'use_S_hourly' in kwargs:
+        # use the calculated timeseries of S
+        S = extract_S_hourly(FO_dict, time, ceil_lam)
+    elif 'use_S_constant' in kwargs:
+        print 'using a constant S of ' + str(kwargs['use_S_constant'])
+        S = kwargs['use_S_constant']
+    elif 'cheat_S_param' in kwargs:
+        print 'using the cheat parameterisation of S!'
+        S = (-0.02214879231039488 * (rh_frac*100.0)) + 54.800201651558169
+
+    else:
+        # Use parameterised S instead -> either constant or S(RH)
+        if version <= 1.0:
+            # Constant lidar ratio = 60 sr (continental aerosol; Warren et al. 2018)
+            S = FOcon.LidarRatio['Aerosol']
+
+        elif version >= 1.1:
+            # Read in from look up table (monthly varying, for either an urban or rural site)
+            # hold it constant for now, until the climatology has been made
+            # S = get_S_climatology(time, rh_frac, ceil_lam) - old method
+            print 'new RH param with hys and shapecorr'
+            S = (rh_frac * 63.7323210) - 0.0404945445
+
+    # Calculate backscatter using a constant lidar ratio
+    # ratio between PARTICLE extinction and backscatter coefficient (not total extinction!).
+    beta_a = aer_ext_coeff_tot / S
+
+    # store all elements into a dictionary for output and diagnostics
+    export_vars = {'unnatenuated_backscatter': beta_a,
+                'alpha_a': alpha_a,
+                'aer_ext_coeff_tot': aer_ext_coeff_tot,
+                'wv_ext_coeff': wv_ext_coeff,
+                'S': S}
+
+    FO_dict.update(export_vars)
+
+    # FO_dict = {'beta_a': beta_a,
+    #             'alpha_a': alpha_a,
+    #             'aer_ext_coeff_tot': aer_ext_coeff_tot,
+    #             'wv_ext_coeff': wv_ext_coeff,
+    #             'r_d': r_d,
+    #             'r_g':r_g,
+    #             'N': N_aer,
+    #             'Q_ext': Q_ext,
+    #             'Q_ext_dry': Q_ext_dry_matrix,
+    #             'f_RH': f_RH_matrix,
+    #             'S': S}
 
     return FO_dict
 
@@ -718,15 +965,231 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
 
     return ext_coeff_dict
 
-def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, version,
-                   time, aer_modes, **kwargs):
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# 1.3 aerFO using UKV to create 3D fields - needs it own mod_site_extract_calc function to avoid subselection
+def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
+                          fullForecast=False, Z=21, allvars=False, m_coeff=1.0, rh_coeff=1.0,
+                          version=FOcon.aerFO_version, **kwargs):
+
+    """
+    Extract MURK aerosol and calculate RH for each of the sites in the ceil metadata. Calculate the forward modelled
+    backscatter. Can retain the full forecast, or just for the main day
+
+    :param day: (datetime)
+    :param modDatadir:
+    :param model_type: (str) e.g. UKV
+    :param res: model resolution
+
+    :keyword Z: forecast start time, defaulted to 21
+    :keyword version: version to run. Older versions use the original phyiscal hygroscopic growth
+    :keyword m_coeff: (float) coefficient to rescale m if desired. Set to 1.0 normally so m is not rescaled [fraction].
+                Either a single value or an array of the same shape to mod_aer
+    :keyword rh_coeff: coefficient to rescale RH [fraction], similar to m_coeff
+    :keyword version: (float scaler; default: 1.1) aerFO version number:
+                0.1 - original aerFO using constant Q = 2, and swelling the radii for calculating the extinction coeff.
+                    No aerosol species differentiation, taken straight from Chalrton-Perez et al. 2016.
+                0.2 - developed aerFO using Q = Q_ext,dry * f(RH): fixed aerosol proportions of amm. sulphate,
+                    amm. nitrate and organic carbon (aged fossil fuel OC) from Haywood et al. 2008 flights.
+                1.0 - same as v0.2 and the version used in paper 1.
+    (Current)   1.1 - Q_ext,dry and f(RH) now monthly varying and include black carbon and salt form observations.
+                    Separate default versions of Q_ext,dry, f(RH) and S for urban (based on North Kensington (NK),
+                    London) and rural (based on Chilbolton (CH), UK). f(RH) now varies with radius size too. geometric
+                    standard deviation for CH and NK derived from observations to help calculated Q_ext,dry and f(RH).
+                2.0 - same as v1.1 as used in paper 2.
+
+    kwargs
+    :param fullForecast: (bool; default: False) Should the entire forecast be processed or just the main day?
+    :param allvars: (bool; default: False) return all variables that were calculated in estimating the attenuated bacskcatter?
+    :param obs_rh: (bool; default: False)
+    :param obs_N: (bool; default: False) Use observed Number conc. from observations instead of estimating from aerosol mass
+    :param obs_r: (bool; default: False) Use observed r from observations instead of estimating from aerosol mass
+    :param water_vapour_absorption_from_obs: (bool; default: False) calculate the water vapour absorption from observations
+                instead of the NWP model output.
+
+    :return: mod_data: (dictionary) different aerFO outputs including forward modelled attenuated backscatter.
+    """
+
+    # if 'nan_policy' in kwargs.keys():
+
+    def calc_RH(mod_T_celsius, mod_q, mod_r_v, mod_p):
+
+        """
+        # calculate relative humidity
+        # Thermal Physics of the Atmosphere - Maarten's book.
+        """
+
+        # -----------
+        # saturated vapour pressure (hPa, then Pa) - Teten's eq 5.18, pp. 98
+        e_s_hpa = 6.112 * (np.exp((17.67 * mod_T_celsius) / (mod_T_celsius + 243.5)))
+        e_s = e_s_hpa * 100
+
+        # mass mixing ratio of water vapour pp. 100
+        # now calculated outside function for use in water vapour absorption coefficient
+        r_v = mod_q / (1 - mod_q)
+
+        # mass mixing ratio of water vapour at saturation eq 5.22, pp. 100
+        r_vs = 0.622 * (e_s / mod_p)
+
+        # relative humidity (variant of eq 5.24, pp 101)
+        # rescale rh if requested
+        mod_rh = mod_r_v / r_vs
+
+        return mod_rh
+
+    # Read in the modelled data for London
+    mod_all_data = read_all_mod_data(modDatadir, day, Z)
+
+    # define mod_data array
+    mod_data = {}
+
+    # get the lon and lat idx for the instrument
+    #idx_lon, idx_lat, _, _ = get_site_loc_idx_in_mod(mod_all_data, loc, model_type, res)
+
+    # Time extraction - pull out just the main day's data or the full forecast?
+    if fullForecast == False:
+        # only extract data for the main day
+        range_time = get_time_idx_forecast(mod_all_data, day)
+    else:
+        range_time = np.arange(len(mod_all_data['time']))
+
+    # extract the variables for that location
+    # rescale m by m_coeff. m_coeff = 1.0 by default so normally it is not rescaled
+    # .shape = [times, height, lat, lon]
+    mod_aer = mod_all_data['aerosol_for_visibility'][range_time, :, :, :] * m_coeff
+    mod_q = mod_all_data['specific_humidity'][range_time, :, :, :]
+    mod_p = mod_all_data['air_pressure'][range_time, :, :, :]
+    mod_T = mod_all_data['air_temperature'][range_time, :, :, :]
+    mod_h = mod_all_data['level_height']
+    mod_time = np.array(mod_all_data['time'])[range_time] # should probably be done in the eu.netCDF_read function
+    mod_u = mod_all_data['x_wind'][range_time, :, :, :]
+    mod_v = mod_all_data['y_wind'][range_time, :, :, :]
+    mod_w = mod_all_data['upward_air_velocity'][range_time, :, :, :]
+    # extract Q_H (sensible heat flux) if it is in the mod_all_data
+    if 'boundary_layer_sensible_heat_flux' in mod_all_data:
+        mod_Q_H = mod_all_data['boundary_layer_sensible_heat_flux'][range_time, :, :, :]
+
+    # Calculate some variables from those read in
+
+    # convert temperature to degree C
+    mod_T_celsius = mod_T - 273.15
+    # calculate water vapour mixing ratio [kg kg-1]: page 100 - Thermal physics of the atmosphere
+    mod_r_v = mod_q / (1 - mod_q)
+    # calculate virtual temperature eq. 1.31 (Ambaumm Notes), state gas constant for dry air
+    mod_Tv = (1 + (0.61 * mod_q)) * mod_T
+    # density of air [kg m-3] #ToDo gas constant is for dry air, should be for moist (small difference)
+    mod_rho = mod_p / (286.9 * mod_Tv)
+
+    # calculate RH [fraction 0-1] from temp [degC] specific humidity (q) [kg kg-1] ...
+    # and water vapour mixing ratio (r) [kg kg-1]
+    # Temp [degC] for use in the impirical equation
+    # scale RH by rh_coeff. Default = 1.0 (no scaling)
+    mod_rh_frac = calc_RH(mod_T_celsius, mod_q, mod_r_v, mod_p) * rh_coeff
+
+    # Use NWP model data as the main rh variables (legacy from earlier aerFO python functions)
+    rh_frac = mod_rh_frac
+    r_v = mod_r_v
+
+    # prcoess forward modelled backscatter for each site
+    FO_dict = forward_operator_3D(mod_aer, rh_frac, r_v, mod_rho, mod_h, ceil_lam, version, mod_time, **kwargs)
+    mod_data['backscatter'] = FO_dict['bsc_attenuated']
+
+    # store MURK aerosol, RH and heights in mod_data dictionary
+    mod_data['RH'] = rh_frac
+    mod_data['aerosol_for_visibility'] = mod_aer
+    mod_data['level_height'] = mod_h
+    mod_data['time'] = mod_time
+
+
+    # check whether to return all the prognostic variables too
+    # returns all variables, not just the main ones like attenuated backscatter, RH, time and height
+    if allvars == True:
+
+        # add all the vars in FO_dict to the mod_data dictionary
+        mod_data.update(FO_dict)
+        # del mod_data[site]['backscatter'] # do not need a copy of attenuated backscatter
+
+        # add the original UKV vars into mod_data
+        mod_data['specific_humidity'] = mod_q
+        mod_data['air_temperature'] = mod_T
+        mod_data['air_pressure'] = mod_p
+
+        # wind variables too
+        mod_data['u_wind'] = mod_u
+        mod_data['v_wind'] = mod_v
+        mod_data['w_wind'] = mod_w
+
+        # lon at lats
+        mod_data['longitude'] = mod_all_data['longitude']
+        mod_data['latitude'] = mod_all_data['latitude']
+
+        # calculate murk concentration in air(from [kg kg-1 of air] to [kg m-3 of air])
+        # kg m-3_air = kg kg-1_air * kg_air m-3_air
+        mod_aer_conc = mod_aer * mod_rho
+
+        mod_data['virtual_temperature'] = mod_Tv
+        mod_data['air_density'] = mod_rho
+        mod_data['aerosol_concentration_dry_air'] = mod_aer_conc
+
+        # if Q_H is in data, extract it
+        if 'boundary_layer_sensible_heat_flux' in mod_all_data:
+            mod_data['Q_H'] = mod_Q_H
+
+    return mod_data
+
+def forward_operator_3D(aer_mod, rh_frac, r_v, mod_rho, z_mod,  ceil_lam, version, mod_time,
+                 r0 = FOcon.r0_haywood, p = FOcon.p_aer,
+                 N0=FOcon.N0_aer, m0 = FOcon.m0_aer, eta = FOcon.eta,
+                 **kwargs):
+    """
+    Process the modelled data to get the attenuated backscatter and aerosol extinction
+
+    :param aer_mod:
+    :param rh_mod:
+    :param z_mod: original 1D array of heights from the model
+    :param mod_time: (array of datetimes) datetimes for each model time step
+    :return: bsc_mod
+    """
+
+    # Redefine several aerFO constants for the urban case
+    N0 = FOcon.N0_aer_urban
+    m0 = FOcon.m0_aer_urban
+    r0 = FOcon.r0_urban
+
+    # create alpha and beta coefficients for aerosol
+    FO_dict = calc_ext_coeff_3D(aer_mod, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil_lam,
+                             version, mod_time, **kwargs)
+
+    mod_alpha = FO_dict['alpha_a']
+    mod_bscUnnAtt = FO_dict['unnatenuated_backscatter']
+
+    # NN = 28800 # number of enteries in time
+    dz = np.zeros_like(z_mod)
+    dz[0] = z_mod[0]
+    dz[1:len(z_mod)] = z_mod[1:len(z_mod)] - z_mod[0:len(z_mod)-1]
+
+    # integrated alpha and transmission for each height
+    optical_depth, mod_transm = compute_transmission_3D(mod_alpha, dz)
+
+    # derive modelled attenuated backscatter
+    bsc_mod = mod_transm * mod_bscUnnAtt
+
+    FO_dict['bsc_attenuated'] = bsc_mod
+    FO_dict['transmission'] = mod_transm
+
+    return FO_dict
+
+# Calculate the extinction coefficient
+def calc_ext_coeff_3D(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil_lam, version,
+                   mod_time, **kwargs):
 
     """
     Compute extinction coefficient (aerosol extinction + water vapour extinction)
 
     :param q_aer: aerosol mass mizing ratio [micrograms kg-1]
     :param rh_frac: relative humidity [ratio/dimensionless]
-    :param time: (array of datetimes) datetimes for each timestep
+    :param r0: mean or 'standard' dry volume radii for this distribution
+    :param mod_time: (array of datetimes) datetimes for each timestep
     :return: alpha_a: total extinction coefficient
     :return: beta_a: UNattenuated backscatter
 
@@ -735,45 +1198,6 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
     as water vapour scattering is negligable, given the tiny size of vapour gas (think its ~1e-28)
 
     """
-
-    def read_obs_aer(rh_frac, time, dN_key):
-        """
-        Read in observed total number for the accum range.
-        :param rh_frac:
-        :param mod_time:
-        :param dN_key: the key in dN for which data to extract
-        """
-
-        filedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/MorningBL/' + \
-                  'data/npy/number_distribution/'
-
-        filepath = filedir + 'NK_APS_SMPS_Ntot_Dv_fine_acc_coarse_' + time[0].strftime('%Y') + '_80-700nm.npy'
-        data_in = np.load(filepath).flat[0]
-        # delete accum range variable
-        if 'accum_range' in data_in:
-            del data_in['accum_range']
-        # ['Ntot_fine', 'Dn_fine', 'Ntot', 'time', 'Ntot_accum', 'Dn_accum']
-
-        t_idx = np.array([eu.nearest(data_in['time'], t)[1] for t in time]) # time index
-        t_diff = np.array([eu.nearest(data_in['time'], t)[2] for t in time]) # dt.timedelta() showing how close time is
-
-        # pull out data
-        var = data_in[dN_key][t_idx]
-        # a = {key: item[t_idx] for key, item in dN.iteritems()} # all data
-
-        # overwrite t_idx locations where t_diff is too high with nans
-        # only keep t_idx values where the difference is below 1 hour
-        bad = np.array([abs(i.days * 86400 + i.seconds) > 60 * 60 for i in t_diff])
-
-        # for key in dN.iterkeys(): # all data
-        #     dN[key][bad] = np.nan
-
-        var[bad] = np.nan
-
-        # As dN is only surface N values, repeat these values to all heights so the shape of obs_out == rh_frac
-        obs_out = np.transpose(np.tile(var, (rh_frac.shape[1], 1)))
-
-        return obs_out
 
     def calc_r_m_original(r_d, rh_frac, B=FOcon.B_activation_haywood):
 
@@ -808,81 +1232,44 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
 
         return r_m
 
-    def get_S_climatology(time, rh_frac, ceil_lam):
-
-        """
-        Create the S array from the climatology (month, RH_fraction) given the month and RH
-        :param time:
-        :param rh_frac:
-        :param ceil_lam (int): ceilometer wavelength [nm]
-        :return: S (time, height):
-        """
-
-        # 1. Read in the data
-        filename = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/' + \
-                   'S_climatology_NK_SMPS_APS_' + str(ceil_lam) + 'nm.npy'
-
-        data = np.load(filename).flat[0]
-        S_clim = data['S_climatology']
-        S_RH_frac = data['RH_frac']
-
-        # 2. Create S array given the time and RH
-
-        # get height range from rh_frac
-        height_idx_range = rh_frac.shape[1]
-
-        # find S array
-        S = np.empty(rh_frac.shape)
-        S[:] = np.nan
-        for t, time_t in enumerate(time):  # time
-            # get month idx (e.g. idx for 5th month = 4)
-            month_idx = time_t.month - 1
-            for h in range(height_idx_range):  # height
-
-                # find RH idx for this month, and put the element into the S array
-                _, rh_idx, _ = eu.nearest(S_RH_frac, rh_frac[t, h])
-                S[t, h] = S_clim[month_idx, rh_idx]
-
-        return S
-
-    def extract_S_hourly(FO_dict, time, ceil_lam):
-
-        """
-        Read in and extract S calculated for that hour from calc_lidar_ratio_general.py on the linux system
-        :return: S .shape(time, height): lidar ratio
-        """
-
-        # set up S array
-        S = np.empty(FO_dict[aer_mode_i]['r_d'].shape)
-        S[:] = np.nan
-
-        # Read in the appropriate yearly file data
-        Sfilename = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/MorningBL/data/npy/' \
-                    'S_timeseries/NK_SMPS_APS_PM10_withSoot_' + time[0].strftime('%Y') + '_' + str(
-            ceil_lam) + 'nm_freshOCGF_hysteresis_shapecorr.npy'
-        data = np.load(Sfilename).flat[0]
-        S_time = data['met']['time']
-        S_timeseries = data['optics']['S']
-
-        # fill S array
-        for t, time_t in enumerate(time):  # time
-            _, t_idx, diff = eu.nearest(S_time, time_t)
-            # if the difference is less than an hour, extract the value (so discard differences exactly equal to 1 hour)
-            if diff.total_seconds() < 60 * 60:
-                S[t, :] = S_timeseries[t_idx]
-
-        return S
-
-
     # ---------------------------
 
-    # prepare the FO_dict to store all the outputted variables together
-    FO_dict={}
+    # Compute the aerosol number density N_aer. Eqn. 3 in Clark et.al. (2008) and Eqn 39 in UMDP 26 Large-scale precip.
+    q_aer_kg_kg = q_aer * 1.0e-9  # convert micrograms kg-1 to kg/kg
 
-    # calculate extinction coefficients for each aerosol mode separately
-    for aer_mode_i in aer_modes:
-        FO_dict[aer_mode_i] = calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, version,
-                                time, aer_mode_i, **kwargs)
+    # Number concentration [m-3]
+    N_aer = N0 * np.power((q_aer_kg_kg / m0), 1.0 - (3.0 * p))
+
+    # Dry mean volume radius of bulk aerosol [m]
+    r_d = r0 * np.power((q_aer_kg_kg / m0), p)
+
+    # Geometric mean volume radius of bulk aerosol [m]
+    #   derived from a linear fit between observed r_d (volume mean) and r_g (Pearson r = 0.65, p=0.0)
+    #   used purely for the f_RH LUT in calc_Q_ext_wet()
+    # r_g = (0.24621593450654974 * r_d) + 0.03258363072889052 # 80 - 700 nm paper 2
+    r_g = (0.122 * r_d) + 4.59e-8  # 80 - 800 nm
+
+    # calculate Q_ext (wet particle extinction efficiency)
+    # MURK, monthly varying based on (amm. nit.; amm. sulph.; OC; BC; sea salt)
+    # Q_ext,dry function of dry size, month
+    # f(RH) function of RH, geometric mean of dry particle distribution, month
+    Q_ext, Q_ext_dry_matrix, f_RH_matrix = calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time)
+
+    # Calculate extinction coefficient
+    # eqns. 17-18 in Clark et.al. (2008)
+    if version == 0.1:
+        # v0.1 original aerFO version - now outdated
+        # calculate swollen radii and extinction coefficient using it
+        # constant Q_ext = 2 (geometric scattering).
+        r_m = calc_r_m_original(r_d, rh_frac)
+        aer_ext_coeff = (eta * FOcon.Q_ext_aer) * np.pi * N_aer * np.power(r_m, 2)
+        print 'Using old version 0.1 approach to swell particles'
+
+    # v0.2 - use dry radii and an extinction enhancement factor, to include the effect of hygroscopic growth on optical
+    #   properties
+    elif version >= 0.2:
+        # aer_ext_coeff = (eta * Q_ext) * np.pi * N_aer * np.power(r_d, 2) # when optical properties were not calc for distributions
+        aer_ext_coeff = Q_ext * np.pi * N_aer * np.power(r_d, 2)
 
     # calculate the water vapour extinction coefficient
     # T = 16.85 degC, q = 0.01 kg kg-1; p = 1100 hPa
@@ -894,72 +1281,71 @@ def calc_att_backscatter_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil
         # gaussian weighted average (mean = 905, FWHM = 4) = 0.016709242714125036 # (current) should be used for CL31 (kotthaus et al., 2016)
         # gaussian weighted average (mean = 905, FWHM = 8) = 0.024222946249630242 # (test) test sensitivity to FWHM
         # gaussian weighted average (mean = 900, FWHM = 4) = 0.037273493204864103 # (highest wv abs for a central wavelength between 895 - 915)
-        wv_ext_coeff = 0.016709242714125036 * rho * r_v
+        wv_ext_coeff = 0.016709242714125036 * mod_rho * r_v
     else:
         raise ValueError('ceilometer wavelength != 905 nm, need to calculate a new gaussian average to \n'
                          'calculate water vapour extinction coefficient for this new wavelength!')
 
-    # # total extinction coefficient
-    # alpha_a = aer_ext_coeff + wv_ext_coeff
-
-    # total aerosol extinction coefficient
-    aer_ext_coeff_tot = np.sum(np.array([FO_dict[key]['aer_ext_coeff'] for key in aer_modes]), axis=0)
-    # total extinction
-    alpha_a = aer_ext_coeff_tot + wv_ext_coeff
+    # total extinction coefficient
+    alpha_a = aer_ext_coeff + wv_ext_coeff
 
     # Get lidar ratio (S)
-    if 'use_S_hourly' in kwargs:
-        # use the calculated timeseries of S
-        S = extract_S_hourly(FO_dict, time, ceil_lam)
-    elif 'use_S_constant' in kwargs:
-        print 'using a constant S of ' + str(kwargs['use_S_constant'])
-        S = kwargs['use_S_constant']
-    elif 'cheat_S_param' in kwargs:
-        print 'using the cheat parameterisation of S!'
-        S = (-0.02214879231039488 * (rh_frac*100.0)) + 54.800201651558169
+    if version <= 1.0:
+        # Constant lidar ratio = 60 sr (continental aerosol; Warren et al. 2018)
+        S = FOcon.LidarRatio['Aerosol']
 
-    else:
-        # Use parameterised S instead -> either constant or S(RH)
-        if version <= 1.0:
-            # Constant lidar ratio = 60 sr (continental aerosol; Warren et al. 2018)
-            S = FOcon.LidarRatio['Aerosol']
+    elif version >= 1.1:
+        # use mean S calculated from the lidar ratio work in paper 2
+        S = 43.136
 
-        elif version >= 1.1:
-            # Read in from look up table (monthly varying, for either an urban or rural site)
-            # hold it constant for now, until the climatology has been made
-            # S = get_S_climatology(time, rh_frac, ceil_lam) - old method
-            print 'new RH param with hys and shapecorr'
-            S = (rh_frac * 63.7323210) - 0.0404945445
-
-    # Calculate backscatter using a constant lidar ratio
-    # ratio between PARTICLE extinction and backscatter coefficient (not total extinction!).
-    beta_a = aer_ext_coeff_tot / S
+    # Calculate unattenuated backscatter using the aerosol lidar ratio
+    # aerosol lidar ratio = ratio between PARTICLE extinction and backscatter coefficient (not total extinction!).
+    beta_a = aer_ext_coeff / S
 
     # store all elements into a dictionary for output and diagnostics
-    export_vars = {'unnatenuated_backscatter': beta_a,
+    FO_dict = {'unnatenuated_backscatter': beta_a,
                 'alpha_a': alpha_a,
-                'aer_ext_coeff_tot': aer_ext_coeff_tot,
+                'aer_ext_coeff': aer_ext_coeff,
                 'wv_ext_coeff': wv_ext_coeff,
+                'r_d': r_d,
+                'r_g':r_g,
+                'N': N_aer,
+                'Q_ext': Q_ext,
+                'Q_ext_dry': Q_ext_dry_matrix,
+                'f_RH': f_RH_matrix,
                 'S': S}
-
-    FO_dict.update(export_vars)
-
-    # FO_dict = {'beta_a': beta_a,
-    #             'alpha_a': alpha_a,
-    #             'aer_ext_coeff_tot': aer_ext_coeff_tot,
-    #             'wv_ext_coeff': wv_ext_coeff,
-    #             'r_d': r_d,
-    #             'r_g':r_g,
-    #             'N': N_aer,
-    #             'Q_ext': Q_ext,
-    #             'Q_ext_dry': Q_ext_dry_matrix,
-    #             'f_RH': f_RH_matrix,
-    #             'S': S}
 
     return FO_dict
 
 # Transmission
+def compute_transmission_3D(alpha_extinction, dz):
+
+    """ Computes the two-way transmission and optical depth (integral alpha, or tau)"""
+
+    import numpy as np
+
+    # shape of alpha_extinction (and final shape of transmission)
+    shape = np.shape(alpha_extinction)
+
+    optical_depth = np.empty(alpha_extinction.shape)
+    optical_depth[:] = np.nan
+
+    # calculate optical depth (iterate through time, lat and lon)
+    for t in range(shape[0]):
+        for lat_i in range(shape[2]):
+            for lon_j in range(shape[3]):
+                optical_depth[t, :, lat_i, lon_j] = np.cumsum(alpha_extinction[t, :, lat_i, lon_j] * dz)
+
+    # calculate transmission
+    transmission = np.exp(-2.0 * optical_depth)
+
+    return optical_depth, transmission
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+# Transmission
 def compute_transmission(alpha_extinction, dz):
+
     import numpy as np
 
     ss = np.shape(alpha_extinction)
@@ -979,7 +1365,6 @@ def compute_transmission(alpha_extinction, dz):
     transmission = np.exp(-2.0 * integral_alpha)
 
     return integral_alpha, transmission
-
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 1.1 Q_ext calculation (Q_ext,dry * f(RH))
@@ -1144,7 +1529,7 @@ def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
     :return: Q_ext, Q_ext_dry_matrix, f_RH_matrix
     """
 
-    from ellUtils import nearest, netCDF_read
+    from ellUtils.ellUtils import nearest, netCDF_read, binary_search_nearest
 
     # Reading functions
     def read_f_RH(mod_time, ceil_lam):
@@ -1204,37 +1589,150 @@ def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
     f_RH = read_f_RH(mod_time, ceil_lam) # ['f_RH MURK'].shape(month, radii, RH)
     Q_ext_dry = read_Q_ext_dry(mod_time, ceil_lam) #.shape(radii, month)
 
-    #print 'testing! reducing murk f_RH by 1/3!'
-    #f_RH['f(RH) MURK'] *=0.66
-
     # create matric of Q_ext_dry based on r_d
     Q_ext_dry_matrix = np.empty(r_d.shape)
     Q_ext_dry_matrix[:] = np.nan
     f_RH_matrix = np.empty(r_d.shape)
     f_RH_matrix[:] = np.nan
 
-    # find Q_ext dry, given the dry radius matrix
-    # find f(RH), given the RH fraction matric
-    for t, time_t in enumerate(mod_time): # time
-        # get month idx (e.g. idx for 5th month = 4)
-        month_idx = time_t.month - 1
-        for h in range(height_idx_range): # height
+    # # find Q_ext dry, given the dry radius matrix
+    # # find f(RH), given the RH fraction matric
 
-            # Q_ext_dry
-            # LUT uses r_d (volume) [meters]
-            _, r_Q_idx, _ = nearest(Q_ext_dry['radius_m'], r_d[t, h])
-            Q_ext_dry_matrix[t, h] = Q_ext_dry['Q_ext_dry'][r_Q_idx, month_idx]
+    # loop through all elements of the array
+    # idx is the full position of the element e.g. idx = (24L, 69L, 11L, 21L) - (time, height, lat, lon)
+    for idx, _ in np.ndenumerate(r_d):
 
-            # f(RH) (has it's own r_idx that is in units [nm])
-            # LUT uses r_g (geometric) [nm] ToDo should change this to meters...
-            _, r_f_RH_idx, _ = nearest(f_RH['radii_range'], r_g_nm[t, h])
-            _, rh_idx, _ = nearest(f_RH['RH'], rh_frac[t, h])
-            f_RH_matrix[t, h] = f_RH['f(RH) MURK'][month_idx, r_f_RH_idx, rh_idx]
+        # month idx for Q_ext_dry
+        month_idx = mod_time[idx[0]].month - 1
+
+        # debugging
+        # if (idx[1] == 0) & (idx[2] == 0) & (idx[3] == 0):
+        #     print idx
+
+        # Q_ext_dry - binary
+        # LUT uses r_d (volume) [meters]
+        r_Q_idx = binary_search_nearest(Q_ext_dry['radius_m'], r_d[idx])
+        Q_ext_dry_matrix[idx] = Q_ext_dry['Q_ext_dry'][r_Q_idx, month_idx]
+
+
+        # f(RH) (has it's own r_idx that is in units [nm])
+        # LUT uses r_g (geometric) [nm] ToDo should change this to meters...
+        r_f_RH_idx = binary_search_nearest(f_RH['radii_range'], r_g_nm[idx])
+        rh_idx = binary_search_nearest(f_RH['RH'], rh_frac[idx])
+        f_RH_matrix[idx] = f_RH['f(RH) MURK'][month_idx, r_f_RH_idx, rh_idx]
 
     # calculate Q_ext_wet
     Q_ext = Q_ext_dry_matrix * f_RH_matrix
 
     return Q_ext, Q_ext_dry_matrix, f_RH_matrix
+
+# def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
+#     """
+#
+#     Calculate Q_ext_wet using Q_ext_dry and f(RH) for current wavelength
+#     Q_ext,dry and f_RH are monthly varying based on obs at NK and CH for urban and rural site default settings
+#     respectively. f_RH also varies with geometric radius.
+#
+#     EW 23/02/17
+#     :param ceil_lam:
+#     :param r_d: dry mean volume radius [meters] - needed for Q_ext,dry LUT
+#     :param r_g: dry geometric mean radius [meters] - needed for f_RH LUT
+#     :param rh_frac: RH [fraction]
+#     :param mod_time (array of datetimes) datetimes for the timesteps
+#     :return: Q_ext, Q_ext_dry_matrix, f_RH_matrix
+#     """
+#
+#     from ellUtils.ellUtils import nearest, netCDF_read
+#
+#     # Reading functions
+#     def read_f_RH(mod_time, ceil_lam):
+#
+#         """
+#         Read in the f_RH data from netCDF file
+#         EW 21/02/17
+#
+#         :param mod_time (array of datetimes) datetimes for the timesteps
+#         :param ceil_lam: (int) ceilometer wavelength [nm]
+#         :return: data = {RH:... f_RH:...}
+#
+#         """
+#
+#         # file name and path
+#         miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+#         filename = 'monthly_f(RH)_NK_'+str(ceil_lam)+'nm.nc'
+#
+#         # read data
+#         # f_RH = netCDF_read(miedir + filename, vars=['Relative Humidity', 'f(RH) MURK', 'radii_range_nm'])
+#         f_RH = netCDF_read(miedir + filename, vars=['RH', 'f(RH) MURK', 'radii_range'])
+#         return f_RH
+#
+#     def read_Q_ext_dry(mod_time, ceil_lam):
+#
+#         """
+#         Read in the Q_ext for dry murk.
+#         EW 21/02/17
+#
+#         :param mod_time (array of datetimes) datetimes for the timesteps
+#         :param ceil_lam: (int) ceilometer wavelength [nm]
+#         :return: Q_ext_dry = {radius:... Q_ext_dry:...}
+#
+#         """
+#
+#         miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+#         filename = 'urban_monthly_Q_ext_dry_' + str(ceil_lam) + 'nm.csv'
+#
+#         raw = np.loadtxt(miedir + filename, delimiter=',')
+#
+#         # format data into a dictionary
+#         Q_ext_dry = {'radius_m': raw[:, 0],
+#                      'Q_ext_dry': raw[:, 1:]} # Q_ext_dry['Q_ext_dry'].shape(radii, month)
+#
+#
+#         return Q_ext_dry
+#
+#     # ---------------------------
+#
+#     # cronvert geometric radius to nm to find f(RH)
+#     r_g_nm = r_g * 1.0e9
+#
+#     # height idx range of r_d and RH
+#     height_idx_range = r_d.shape[1]
+#
+#     # read in Q_ext_dry and f(RH) look up tables
+#     f_RH = read_f_RH(mod_time, ceil_lam) # ['f_RH MURK'].shape(month, radii, RH)
+#     Q_ext_dry = read_Q_ext_dry(mod_time, ceil_lam) #.shape(radii, month)
+#
+#     #print 'testing! reducing murk f_RH by 1/3!'
+#     #f_RH['f(RH) MURK'] *=0.66
+#
+#     # create matric of Q_ext_dry based on r_d
+#     Q_ext_dry_matrix = np.empty(r_d.shape)
+#     Q_ext_dry_matrix[:] = np.nan
+#     f_RH_matrix = np.empty(r_d.shape)
+#     f_RH_matrix[:] = np.nan
+#
+#     # find Q_ext dry, given the dry radius matrix
+#     # find f(RH), given the RH fraction matric
+#     for t, time_t in enumerate(mod_time): # time
+#         # get month idx (e.g. idx for 5th month = 4)
+#         month_idx = time_t.month - 1
+#         for h in range(height_idx_range): # height
+#
+#             # Q_ext_dry
+#             # LUT uses r_d (volume) [meters]
+#             _, r_Q_idx, _ = nearest(Q_ext_dry['radius_m'], r_d[t, h])
+#             Q_ext_dry_matrix[t, h] = Q_ext_dry['Q_ext_dry'][r_Q_idx, month_idx]
+#
+#             # f(RH) (has it's own r_idx that is in units [nm])
+#             # LUT uses r_g (geometric) [nm] ToDo should change this to meters...
+#             _, r_f_RH_idx, _ = nearest(f_RH['radii_range'], r_g_nm[t, h])
+#             _, rh_idx, _ = nearest(f_RH['RH'], rh_frac[t, h])
+#             f_RH_matrix[t, h] = f_RH['f(RH) MURK'][month_idx, r_f_RH_idx, rh_idx]
+#
+#     # calculate Q_ext_wet
+#     Q_ext = Q_ext_dry_matrix * f_RH_matrix
+#
+#     return Q_ext, Q_ext_dry_matrix, f_RH_matrix
 
 def calc_Q_ext_wet_v1p0(ceil_lam, r_d, rh_frac):
     """
@@ -1337,29 +1835,6 @@ def calc_Q_ext_wet_v1p0(ceil_lam, r_d, rh_frac):
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 2. Reading stuff in
 
-# 2.1 Metadata
-
-def read_ceil_metadata(datadir, loc_filename='CeilsCSV.csv'):
-
-    """
-    Read in ceil metadata (lon, lat) into a dictionary
-    :param datadir:
-    :return:
-    """
-
-    # read in the ceil locations
-    loc_fname = datadir + loc_filename
-
-    ceil_rawmeta = eu.csv_read(loc_fname)
-
-    # convert into dictionary - [lon, lat]
-    # skip the headers
-    ceil_metadata = {}
-    for i in ceil_rawmeta[1:]:
-        ceil_metadata[i[1]] = [float(i[3]), float(i[4])]
-
-    return ceil_metadata
-
 # -----------------
 # 2.2 Model data
 
@@ -1380,8 +1855,8 @@ def read_all_mod_data(modDatadir, day, Z):
     # date string (forecast at Z starting on the previous day)
     dateStr = (day + dt.timedelta(hours=-24)).strftime('%Y%m%d')
 
-    # temp filename for the day
-    mod_filename = 'extract_prodm_op_ukv_' + dateStr + '_' + str(Z) + '_full.nc'
+    # filename for the day
+    mod_filename = 'extract_London_prodm_op_ukv_' + dateStr + '_' + str(Z) + '_full.nc'
 
     # concatenate the names
     mod_fname = modDatadir + mod_filename
@@ -1443,7 +1918,7 @@ def get_site_loc_idx_in_mod(mod_all_data, loc, model_type, res):
 # main one that does the complete read in for all ceil sites
 def mod_site_extract_calc(day, ceil_metadata, modDatadir, model_type, res, ceil_lam,
                           fullForecast=False, Z=21, allvars=False, m_coeff=1.0, rh_coeff=1.0,
-                          version=1.1, **kwargs):
+                          version=FOcon.aerFO_version, **kwargs):
 
     """
     Extract MURK aerosol and calculate RH for each of the sites in the ceil metadata
@@ -1485,7 +1960,7 @@ def mod_site_extract_calc(day, ceil_metadata, modDatadir, model_type, res, ceil_
 
     # if 'nan_policy' in kwargs.keys():
 
-    def calc_RH(mod_T_ceilsius, mod_q, mod_r_v):
+    def calc_RH(mod_T_celsius, mod_q, mod_r_v, mod_p):
 
         """
         # calculate relative humidity
@@ -1565,7 +2040,7 @@ def mod_site_extract_calc(day, ceil_metadata, modDatadir, model_type, res, ceil_
         # and water vapour mixing ratio (r) [kg kg-1]
         # Temp [degC] for use in the impirical equation
         # scale RH by rh_coeff. Default = 1.0 (no scaling)
-        mod_rh_frac = calc_RH(mod_T_celsius, mod_q, mod_r_v) * rh_coeff
+        mod_rh_frac = calc_RH(mod_T_celsius, mod_q, mod_r_v, mod_p) * rh_coeff
 
         # Replace variables with observations?
         # Use NWP model or observed RH?
@@ -1585,7 +2060,6 @@ def mod_site_extract_calc(day, ceil_metadata, modDatadir, model_type, res, ceil_
 
         # prcoess forward modelled backscatter for each site
         FO_dict = forward_operator(mod_aer, rh_frac, r_v, mod_rho, mod_h, ceil_lam, version, mod_time, **kwargs)
-        mod_data[site]['backscatter'] = FO_dict['bsc_attenuated']
 
         # store MURK aerosol, RH and heights in mod_data dictionary
         mod_data[site]['RH'] = rh_frac
@@ -1600,7 +2074,6 @@ def mod_site_extract_calc(day, ceil_metadata, modDatadir, model_type, res, ceil_
 
             # add all the vars in FO_dict to the mod_data dictionary
             mod_data[site].update(FO_dict)
-            # del mod_data[site]['backscatter'] # do not need a copy of attenuated backscatter
 
             # add the original UKV vars into mod_data
             mod_data[site]['specific_humidity'] = mod_q
@@ -1950,7 +2423,7 @@ def read_all_ceil_obs(day, site_bsc, ceilDatadir, fType='', timeMatch=None, cali
 # older versions
 
 # read ins ceil data and strips it down to hourly values accoridng to mod_data
-def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1, **kwargs):
+def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=FOcon.aerFO_version, **kwargs):
 
     """
     Read in ceilometer backscatter, time, height and SNR data and strip the hours out of it.
@@ -2054,7 +2527,7 @@ def read_ceil_obs(day, site_bsc, ceilDatadir, mod_data, calib=True, version=1.1,
     return bsc_obs
 
 
-def read_ceil_obs_all(day, site_bsc, ceilDatadir, calib=True, version=1.1):
+def read_ceil_obs_all(day, site_bsc, ceilDatadir, calib=True, version=FOcon.aerFO_version):
     """
     Read in ceilometer backscatter, time, height and SNR data and strip the hours out of it.
     Calibrate data if requested
@@ -2175,7 +2648,6 @@ def read_ceil_obs_all(day, site_bsc, ceilDatadir, calib=True, version=1.1):
     return bsc_obs
 
 # ----------------
-
 
 # read in helper functions
 

@@ -6,6 +6,9 @@ Separated from the functions by Elliott on Fri 28th Oct 2016
 
 from numpy import pi
 
+# Most up-to-date aerFO version
+aerFO_version = 2.0
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # AEROSOL CONSTANTS
 

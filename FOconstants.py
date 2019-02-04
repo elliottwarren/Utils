@@ -13,7 +13,7 @@ aerFO_version = 2.0
 # AEROSOL CONSTANTS
 
 # critical value of relative humidity to start swelling the aerosol
-RH_crit = 38.0 # no longer used
+# RH_crit = 38.0 # no longer used
 
 # Parameters from Pete Clarks (2008) visibility paper:
 rho_a = 1.7e3  # density of aerosol (for ammonium sulphate) [kg m-3]

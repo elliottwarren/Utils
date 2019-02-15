@@ -15,9 +15,21 @@ import os
 from dateutil import tz
 
 import datetime as dt
-from ellUtils import ellUtils as eu
-from ceilUtils import ceilUtils as ceil
-from forward_operator import FOconstants as FOcon
+import sys
+
+# Met Office machine setup returns 'linux2'. Windows PC returns 'win32'
+if sys.platform == 'linux2':
+    sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/Utils') #aerFO
+    sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/ellUtils') # general utils
+    sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/ceilUtils') # ceil utils
+    
+    import ellUtils as eu
+    import ceilUtils as ceil
+    import FOconstants as FOcon
+else:
+    from ellUtils import ellUtils as eu
+    from ceilUtils import ceilUtils as ceil
+    from forward_operator import FOconstants as FOcon
 
 #testing tools
 #from timeit import default_timer as timer
@@ -1006,6 +1018,7 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
     :param obs_r: (bool; default: False) Use observed r from observations instead of estimating from aerosol mass
     :param water_vapour_absorption_from_obs: (bool; default: False) calculate the water vapour absorption from observations
                 instead of the NWP model output.
+    :param hr: (datetime) hour of data to be read in if high resolution data is being used e.g. 55m
 
     :return: mod_data: (dictionary) different aerFO outputs including forward modelled attenuated backscatter.
     """
@@ -1013,6 +1026,7 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
     # if 'nan_policy' in kwargs.keys():
 
     def calc_RH(mod_T_celsius, mod_q, mod_r_v, mod_p):
+
 
         """
         # calculate relative humidity
@@ -1038,7 +1052,12 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
         return mod_rh
 
     # Read in the modelled data for London
-    mod_all_data = read_all_mod_data(modDatadir, day, Z)
+    
+    
+    if model_type == 'UKV':
+        mod_all_data = read_all_mod_data(modDatadir, day, Z)
+    else:
+        mod_all_data = read_mod_data_hr(modDatadir, day, Z, hr)
 
     # define mod_data array
     mod_data = {}
@@ -1866,6 +1885,30 @@ def read_all_mod_data(modDatadir, day, Z):
 
     # set timezone as UTC
     #mod_all_data['time'] = np.array([i.replace(tzinfo=tz.gettz('UTC')) for i in mod_all_data['time']])
+
+    return mod_all_data
+
+
+def read_mod_data_hr(modDatadir, day, Z, hr):
+
+    """ Read all the model data """
+
+    # date string (forecast at Z starting on the previous day)
+    dateStr = day.strftime('%Y%m%d')
+    
+    hrStr = hr.strftime('0%H')
+
+    # filename for the day
+    #mod_filename = 'extract_London_'+model_type+'_20160913_03Z_001_main.nc
+    mod_filename = 'extract_London_prodm_op_ukv_' + dateStr + '_' + str(Z) + 'Z_' + hrStr + '_main.nc'
+
+    # concatenate the names
+    mod_fname = modDatadir + mod_filename
+
+    # Read in the modelled data for London
+    mod_all_data = eu.netCDF_read(mod_fname)
+
+    # add time dimension
 
     return mod_all_data
 

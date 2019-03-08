@@ -9,7 +9,7 @@ during hygroscopic growth)
 """
 
 import numpy as np
-import iris
+# import iris
 import cartopy.crs as ccrs
 import os
 from dateutil import tz
@@ -980,7 +980,7 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 # 1.3 aerFO using UKV to create 3D fields - needs it own mod_site_extract_calc function to avoid subselection
-def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
+def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
                           fullForecast=False, Z=21, allvars=False, m_coeff=1.0, rh_coeff=1.0,
                           version=FOcon.aerFO_version, **kwargs):
 
@@ -991,7 +991,6 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
     :param day: (datetime)
     :param modDatadir:
     :param model_type: (str) e.g. UKV
-    :param res: model resolution
 
     :keyword Z: forecast start time, defaulted to 21
     :keyword version: version to run. Older versions use the original phyiscal hygroscopic growth
@@ -1054,10 +1053,10 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
     # Read in the modelled data for London
     
     
-    if model_type == 'UKV':
-        mod_all_data = read_all_mod_data(modDatadir, day, Z)
+    if (model_type == 'UKV') | (model_type == 'LM'):
+        mod_all_data = read_all_mod_data(modDatadir, day, Z, model_type)
     else:
-        mod_all_data = read_mod_data_hr(modDatadir, day, Z, hr, model_type)
+        mod_all_data = read_mod_data_hr(modDatadir, day, Z, model_type, **kwargs)
 
     # define mod_data array
     mod_data = {}
@@ -1076,17 +1075,15 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
     # rescale m by m_coeff. m_coeff = 1.0 by default so normally it is not rescaled
     # .shape = [times, height, lat, lon]
     
-    mod_data={}
-    for var, data in mod_all_data.iteritems():
-        
-        print var
-        
-        if data.ndim == 4:
-            mod_data[var] = data[range_time, :, :, :]
-        elif var == 'time':
-            mod_data[var] = np.array(mod_all_data['time'])[range_time]
-        elif data.ndim == 1:
-            mod_data[var] = mod_all_data[var]
+#     mod_data={}
+#     for var, data in mod_all_data.iteritems():
+#         print var
+#         if data.ndim == 4:
+#             mod_data[var] = data[range_time, :, :, :]
+#         elif var == 'time':
+#             mod_data[var] = np.array(mod_all_data['time'])[range_time]
+#         elif data.ndim == 1:
+#             mod_data[var] = mod_all_data[var]
     
     
     # apply scaling to aerosol if stated (scaling = 1 (ineffectual) by default)
@@ -1096,27 +1093,27 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
 #     # extract the variables for that location
 #     # rescale m by m_coeff. m_coeff = 1.0 by default so normally it is not rescaled
 #     # .shape = [times, height, lat, lon]
-#     mod_aer = mod_all_data['aerosol_for_visibility'][range_time, :, :, :] * m_coeff
-#     mod_q = mod_all_data['specific_humidity'][range_time, :, :, :]
-#     mod_p = mod_all_data['air_pressure'][range_time, :, :, :]
-#     mod_T = mod_all_data['air_temperature'][range_time, :, :, :]
-#     mod_h = mod_all_data['level_height']
-#     mod_time = np.array(mod_all_data['time'])[range_time] # should probably be done in the eu.netCDF_read function
-#     mod_u = mod_all_data['x_wind'][range_time, :, :, :]
-#     mod_v = mod_all_data['y_wind'][range_time, :, :, :]
-#     mod_w = mod_all_data['upward_air_velocity'][range_time, :, :, :]
+    mod_aer = mod_all_data['aerosol_for_visibility'][range_time, :, :, :] * m_coeff
+    mod_q = mod_all_data['specific_humidity'][range_time, :, :, :]
+    mod_p = mod_all_data['air_pressure'][range_time, :, :, :]
+    mod_T = mod_all_data['air_temperature'][range_time, :, :, :]
+    mod_h = mod_all_data['level_height']
+    mod_time = np.array(mod_all_data['time'])[range_time] # should probably be done in the eu.netCDF_read function
+    mod_u = mod_all_data['x_wind'][range_time, :, :, :]
+    mod_v = mod_all_data['y_wind'][range_time, :, :, :]
+    mod_w = mod_all_data['upward_air_velocity'][range_time, :, :, :]
 #     # extract Q_H (sensible heat flux) if it is in the mod_all_data
 #     if 'boundary_layer_sensible_heat_flux' in mod_all_data:
 #         mod_Q_H = mod_all_data['boundary_layer_sensible_heat_flux'][range_time, :, :, :]
 
-    # Calculate some variables from those read in
-    # shallow pointers from mod_data
-    mod_aer = mod_data['aerosol_for_visibility']
-    mod_q = mod_data['specific_humidity']
-    mod_p = mod_data['air_pressure']
-    mod_T = mod_data['air_temperature']
-    mod_h = mod_data['level_height']
-    mod_time = mod_data['time']
+#     # Calculate some variables from those read in
+#     # shallow pointers from mod_data
+#     mod_aer = mod_data['aerosol_for_visibility']
+#     mod_q = mod_data['specific_humidity']
+#     mod_p = mod_data['air_pressure']
+#     mod_T = mod_data['air_temperature']
+#     mod_h = mod_data['level_height']
+#     mod_time = mod_data['time']
     
 
     # convert temperature to degree C
@@ -1133,7 +1130,7 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
     # Temp [degC] for use in the impirical equation
     # scale RH by rh_coeff. Default = 1.0 (no scaling)
     mod_rh_frac = calc_RH(mod_T_celsius, mod_q, mod_r_v, mod_p) * rh_coeff
-    mod_data['RH'] = mod_rh_frac
+    #mod_data['RH'] = mod_rh_frac
     
     # Use NWP model data as the main rh variables (legacy from earlier aerFO python functions)
     rh_frac = mod_rh_frac
@@ -1145,11 +1142,12 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
 
 
     # store MURK aerosol, RH and heights in mod_data dictionary
-    #mod_data['RH'] = rh_frac
-    #mod_data['aerosol_for_visibility'] = mod_aer
-    #mod_data['level_height'] = mod_h
-    #mod_data['time'] = mod_time
-
+    mod_data['RH'] = rh_frac
+    mod_data['aerosol_for_visibility'] = mod_aer
+    mod_data['level_height'] = mod_h
+    mod_data['time'] = mod_time
+    mod_data['longitude'] = mod_all_data['longitude']
+    mod_data['latitude'] = mod_all_data['latitude']
 
     # check whether to return all the prognostic variables too
     # returns all variables, not just the main ones like attenuated backscatter, RH, time and height
@@ -1164,10 +1162,11 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
         mod_data['air_temperature'] = mod_T
         mod_data['air_pressure'] = mod_p
 
-        # wind variables too
-        #mod_data['u_wind'] = mod_u
-        #mod_data['v_wind'] = mod_v
-        #mod_data['w_wind'] = mod_w
+        # wind variables too if present (x_wind in file, but put it as u_wind here to be consistent with processing code)
+        if 'x_wind' in mod_all_data:
+            mod_data['u_wind'] = mod_u
+            mod_data['v_wind'] = mod_v
+            mod_data['w_wind'] = mod_w
 
         # lon at lats
         mod_data['longitude'] = mod_all_data['longitude']
@@ -1183,7 +1182,7 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, res, ceil_lam,
 
         # if Q_H is in data, extract it
         if 'boundary_layer_sensible_heat_flux' in mod_all_data:
-            mod_data['Q_H'] = mod_Q_H
+            mod_data['Q_H'] = mod_all_data['boundary_layer_sensible_heat_flux'][range_time, :, :, :]
 
     return mod_data
 
@@ -1345,7 +1344,7 @@ def calc_ext_coeff_3D(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, c
         S = FOcon.LidarRatio['Aerosol']
 
     elif version >= 1.1:
-        # use mean S calculated from the lidar ratio work in paper 2
+        # use mean S for NK, calculated from the lidar ratio work in paper 2
         S = 43.136
 
     # Calculate unattenuated backscatter using the aerosol lidar ratio
@@ -1450,8 +1449,13 @@ def hourly_obs_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
 
         """
 
+        import sys.platform as platform
+
         # file name and path
-        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        if platform == 'linux2':
+            miedir = '/data/jcmm1/ewarren/Mie/'
+        else:
+            miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
         filename = 'monthly_f(RH)_NK_'+str(ceil_lam)+'nm.nc'
 
         # read data
@@ -1471,7 +1475,14 @@ def hourly_obs_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
 
         """
 
-        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        import sys.platform as platform
+
+        # file name and path
+        if platform == 'linux2':
+            miedir = '/data/jcmm1/ewarren/Mie/'
+        else:
+            miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+
         filename = 'NK_all_aerosol_Q_ext_dry_' + str(ceil_lam) + 'nm.npy'
 
         Q_ext_dry = np.load(miedir + filename).flat[0]
@@ -1491,10 +1502,16 @@ def hourly_obs_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
         """
 
         # file name and path
-        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        import sys.platform as platform
+
+        # file name and path
+        if platform == 'linux2':
+            miedir = '/data/jcmm1/ewarren/Mie/'
+        else:
+            miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
         filename = 'NK_hourly_aerosol_relative_volume.npy'
 
-        # read data
+        # read data (in numpy save)
         # f_RH = netCDF_read(miedir + filename, vars=['Relative Humidity', 'f(RH) MURK', 'radii_range_nm'])
         rel_vol = np.load(miedir + filename).flat[0]
         return rel_vol
@@ -1502,6 +1519,7 @@ def hourly_obs_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
     # ---------------------------
 
     # convert geometric radius to nm to find f(RH)
+    
     r_g_nm = r_g * 1.0e9
 
     # height idx range of r_d and RH
@@ -1578,8 +1596,13 @@ def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
     :param mod_time (array of datetimes) datetimes for the timesteps
     :return: Q_ext, Q_ext_dry_matrix, f_RH_matrix
     """
+    import sys
+    if sys.platform == 'linux2':
+        sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/ellUtils') # general utils
+        from ellUtils import nearest, netCDF_read, binary_search_nearest
+    else:
+        from ellUtils.ellUtils import nearest, netCDF_read, binary_search_nearest
 
-    from ellUtils.ellUtils import nearest, netCDF_read, binary_search_nearest
 
     # Reading functions
     def read_f_RH(mod_time, ceil_lam):
@@ -1595,7 +1618,10 @@ def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
         """
 
         # file name and path
-        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        if sys.platform == 'linux2':
+            miedir = '/data/jcmm1/ewarren/Mie/'
+        else:
+            miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
         filename = 'monthly_f(RH)_NK_'+str(ceil_lam)+'nm.nc'
 
         # read data
@@ -1615,7 +1641,10 @@ def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
 
         """
 
-        miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
+        if sys.platform == 'linux2':
+            miedir = '/data/jcmm1/ewarren/Mie/'
+        else:
+            miedir = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/'
         filename = 'urban_monthly_Q_ext_dry_' + str(ceil_lam) + 'nm.csv'
 
         raw = np.loadtxt(miedir + filename, delimiter=',')
@@ -1630,6 +1659,7 @@ def calc_Q_ext_wet(ceil_lam, r_d, r_g, rh_frac, mod_time):
     # ---------------------------
 
     # cronvert geometric radius to nm to find f(RH)
+    
     r_g_nm = r_g * 1.0e9
 
     # height idx range of r_d and RH
@@ -1898,7 +1928,7 @@ def get_time_idx_forecast(mod_all_data, day):
 
     return range_time
 
-def read_all_mod_data(modDatadir, day, Z):
+def read_all_mod_data(modDatadir, day, Z, model_type):
 
     """ Read all the model data """
 
@@ -1906,7 +1936,10 @@ def read_all_mod_data(modDatadir, day, Z):
     dateStr = (day + dt.timedelta(hours=-24)).strftime('%Y%m%d')
 
     # filename for the day
-    mod_filename = 'extract_London_prodm_op_ukv_' + dateStr + '_' + str(Z) + '_full.nc'
+    if model_type == 'UKV':
+        mod_filename = 'extract_London_prodm_op_ukv_' + dateStr + '_' + str(Z) + '_full.nc'
+    elif model_type == 'LM':
+        mod_filename = 'extract_London_prodm_op_'+model_type+'_' + dateStr + '_' + str(Z) + '_full.nc'
 
     # concatenate the names
     mod_fname = modDatadir + mod_filename
@@ -1919,24 +1952,30 @@ def read_all_mod_data(modDatadir, day, Z):
 
     return mod_all_data
 
+def read_mod_data_hr(modDatadir, day, Z, model_type, **kwargs):
 
-def read_mod_data_hr(modDatadir, day, Z, hr, model_type):
-
-    """ Read all the model data """
+    """
+    Extract data for a single hour. Can extract for a single height as well
+    
+    kwargs
+    :param height_idx (int): which height index to extract out. Keyword for eu.netCDF_read
+    """
 
     # date string (forecast at Z starting on the previous day)
     dateStr = day.strftime('%Y%m%d')
     
-    hrStr = hr.strftime('0%H')
+    hrStr = kwargs['hr'].strftime('0%H')
     
     # filename for the day
-    mod_filename = 'extract_London_' + model_type + '_' + dateStr + '_' + str(Z) + 'Z_' + hrStr + '_main.nc'
-    
+    if model_type == '55m':
+        mod_filename = 'extract_London_' + model_type + '_' + dateStr + '_' + str(Z) + 'Z_' + hrStr + '_main.nc'
+    elif model_type == 'LM':
+        mod_filename = 'extract_London_prodm_op_'+model_type+'_' + dateStr + '_' + str(Z) + '_full.nc'
     # concatenate the names
     mod_fname = modDatadir + mod_filename
 
     # Read in the modelled data for London
-    mod_all_data = eu.netCDF_read(mod_fname)
+    mod_all_data = eu.netCDF_read(mod_fname, single_height_only=True, **kwargs)
 
     # add time dimension
 

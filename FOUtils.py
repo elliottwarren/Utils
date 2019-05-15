@@ -1054,7 +1054,7 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
     
     
     if (model_type == 'UKV') | (model_type == 'LM'):
-        mod_all_data = read_all_mod_data(modDatadir, day, Z, model_type)
+        mod_all_data = read_all_mod_data(modDatadir, day, Z, model_type, **kwargs)
     else:
         mod_all_data = read_mod_data_hr(modDatadir, day, Z, model_type, **kwargs)
 
@@ -1928,7 +1928,7 @@ def get_time_idx_forecast(mod_all_data, day):
 
     return range_time
 
-def read_all_mod_data(modDatadir, day, Z, model_type):
+def read_all_mod_data(modDatadir, day, Z, model_type, **kwargs):
 
     """ Read all the model data """
 
@@ -1945,7 +1945,7 @@ def read_all_mod_data(modDatadir, day, Z, model_type):
     mod_fname = modDatadir + mod_filename
 
     # Read in the modelled data for London
-    mod_all_data = eu.netCDF_read(mod_fname)
+    mod_all_data = eu.netCDF_read(mod_fname, **kwargs)
 
     # set timezone as UTC
     #mod_all_data['time'] = np.array([i.replace(tzinfo=tz.gettz('UTC')) for i in mod_all_data['time']])

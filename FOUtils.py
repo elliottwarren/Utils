@@ -981,8 +981,8 @@ def calc_ext_coeff_from_obs(rh_frac, r_v, rho, z, r0, p, N0, m0, eta, ceil_lam, 
 
 # 1.3 aerFO using UKV to create 3D fields - needs it own mod_site_extract_calc function to avoid subselection
 def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
-                          fullForecast=False, Z=21, allvars=False, m_coeff=1.0, rh_coeff=1.0,
-                          version=FOcon.aerFO_version, **kwargs):
+                          fullForecast=False, Z=21, allvars=False, metvars=False, aerFOvars=False,
+                          m_coeff=1.0, rh_coeff=1.0, version=FOcon.aerFO_version, **kwargs):
 
     """
     Extract MURK aerosol and calculate RH for each of the sites in the ceil metadata. Calculate the forward modelled
@@ -1150,12 +1150,13 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
     mod_data['latitude'] = mod_all_data['latitude']
 
     # check whether to return all the prognostic variables too
-    # returns all variables, not just the main ones like attenuated backscatter, RH, time and height
-    if allvars == True:
-
+    if aerFOvars == True:
         # add all the vars in FO_dict to the mod_data dictionary
         mod_data.update(FO_dict)
-        # del mod_data[site]['backscatter'] # do not need a copy of attenuated backscatter
+        mod_data['aerosol_concentration_dry_air'] = mod_aer_conc
+
+    # returns all variables, not just the main ones like attenuated backscatter, RH, time and height
+    if metvars == True:
 
         # add the original UKV vars into mod_data
         mod_data['specific_humidity'] = mod_q
@@ -1178,7 +1179,6 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
 
         mod_data['virtual_temperature'] = mod_Tv
         mod_data['air_density'] = mod_rho
-        mod_data['aerosol_concentration_dry_air'] = mod_aer_conc
 
         # if Q_H is in data, extract it
         if 'boundary_layer_sensible_heat_flux' in mod_all_data:

@@ -1025,10 +1025,8 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
     # if 'nan_policy' in kwargs.keys():
 
     def calc_RH(mod_T_celsius, mod_q, mod_r_v, mod_p):
-
-
         """
-        # calculate relative humidity
+        # Calculate relative humidity
         # Thermal Physics of the Atmosphere - Maarten's book.
         """
 
@@ -1052,69 +1050,54 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
 
     # Read in the modelled data for London
     
-    
     if (model_type == 'UKV') | (model_type == 'LM'):
         mod_all_data = read_all_mod_data(modDatadir, day, Z, model_type, **kwargs)
-    else:
+    else: # 55 m
         mod_all_data = read_mod_data_hr(modDatadir, day, Z, model_type, **kwargs)
 
-    # define mod_data array
+    # define mod_data dict
     mod_data = {}
-
-    # get the lon and lat idx for the instrument
-    #idx_lon, idx_lat, _, _ = get_site_loc_idx_in_mod(mod_all_data, loc, model_type, res)
 
     # Time extraction - pull out just the main day's data or the full forecast?
     if fullForecast == False:
-        # only extract data for the main day
+        # just 24 hour for the declared [day]
         range_time = get_time_idx_forecast(mod_all_data, day)
     else:
+        # complete forecast
         range_time = np.arange(len(mod_all_data['time']))
 
-    # extract the variables for that location
-    # rescale m by m_coeff. m_coeff = 1.0 by default so normally it is not rescaled
-    # .shape = [times, height, lat, lon]
-    
-#     mod_data={}
-#     for var, data in mod_all_data.iteritems():
-#         print var
-#         if data.ndim == 4:
-#             mod_data[var] = data[range_time, :, :, :]
-#         elif var == 'time':
-#             mod_data[var] = np.array(mod_all_data['time'])[range_time]
-#         elif data.ndim == 1:
-#             mod_data[var] = mod_all_data[var]
-    
-    
     # apply scaling to aerosol if stated (scaling = 1 (ineffectual) by default)
     if m_coeff != 1.0:
         mod_data['aerosol_for_visibility'] *=  m_coeff
 
-#     # extract the variables for that location
-#     # rescale m by m_coeff. m_coeff = 1.0 by default so normally it is not rescaled
-#     # .shape = [times, height, lat, lon]
+    # extract the variables for that location
+    # .shape = [times, height, lat, lon]
     mod_aer = mod_all_data['aerosol_for_visibility'][range_time, :, :, :] * m_coeff
     mod_q = mod_all_data['specific_humidity'][range_time, :, :, :]
     mod_p = mod_all_data['air_pressure'][range_time, :, :, :]
     mod_T = mod_all_data['air_temperature'][range_time, :, :, :]
     mod_h = mod_all_data['level_height']
-    mod_time = np.array(mod_all_data['time'])[range_time] # should probably be done in the eu.netCDF_read function
-    mod_u = mod_all_data['x_wind'][range_time, :, :, :]
-    mod_v = mod_all_data['y_wind'][range_time, :, :, :]
+    mod_time = mod_all_data['time'][range_time] # should probably be done in the eu.netCDF_read function
+    mod_u = mod_all_data['unrotated_x_wind'][range_time, :, :, :]
+    mod_v = mod_all_data['unrotated_y_wind'][range_time, :, :, :]
+    mod_u_rot = mod_all_data['rotated_x_wind'][range_time, :, :, :]
+    mod_v_rot = mod_all_data['rotated_y_wind'][range_time, :, :, :]
     mod_w = mod_all_data['upward_air_velocity'][range_time, :, :, :]
 #     # extract Q_H (sensible heat flux) if it is in the mod_all_data
 #     if 'boundary_layer_sensible_heat_flux' in mod_all_data:
 #         mod_Q_H = mod_all_data['boundary_layer_sensible_heat_flux'][range_time, :, :, :]
 
-#     # Calculate some variables from those read in
-#     # shallow pointers from mod_data
-#     mod_aer = mod_data['aerosol_for_visibility']
-#     mod_q = mod_data['specific_humidity']
-#     mod_p = mod_data['air_pressure']
-#     mod_T = mod_data['air_temperature']
-#     mod_h = mod_data['level_height']
-#     mod_time = mod_data['time']
-    
+    # # fast sensitivity analysis
+    # mod_T = np.empty((25,1)) # 15 degC
+    # mod_aer = np.empty((25,1))
+    # mod_q = np.empty((25,1))
+    # mod_h = np.empty((25,1))
+    # mod_p = np.empty((25,1))
+    # mod_T[:] = 285.15 # 12 degC
+    # mod_aer[:] = 24.0
+    # mod_q[:] = 0.006
+    # mod_h[:] = 1.0
+    # mod_p[:] = 101300.0
 
     # convert temperature to degree C
     mod_T_celsius = mod_T - 273.15
@@ -1136,10 +1119,14 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
     rh_frac = mod_rh_frac
     r_v = mod_r_v
 
-    # prcoess forward modelled backscatter for each site
+    # # fast sensitivity analysis
+    # rh_frac[:] = 0.85
+    # FO_dict = forward_operator(mod_aer, rh_frac, r_v, mod_rho, mod_h, ceil_lam, version, mod_time, **kwargs)
+    # FO_dict['bsc_attenuated'][1]
+    # rh_frac[1]
+
     FO_dict = forward_operator_3D(mod_aer, rh_frac, r_v, mod_rho, mod_h, ceil_lam, version, mod_time, **kwargs)
     mod_data['backscatter'] = FO_dict['bsc_attenuated']
-
 
     # store MURK aerosol, RH and heights in mod_data dictionary
     mod_data['RH'] = rh_frac
@@ -1151,6 +1138,9 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
 
     # check whether to return all the prognostic variables too
     if aerFOvars == True:
+        # calculate murk concentration in air(from [kg kg-1 of air] to [kg m-3 of air])
+        # kg m-3_air = kg kg-1_air * kg_air m-3_air
+        mod_aer_conc = mod_aer * mod_rho
         # add all the vars in FO_dict to the mod_data dictionary
         mod_data.update(FO_dict)
         mod_data['aerosol_concentration_dry_air'] = mod_aer_conc
@@ -1164,18 +1154,12 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
         mod_data['air_pressure'] = mod_p
 
         # wind variables too if present (x_wind in file, but put it as u_wind here to be consistent with processing code)
-        if 'x_wind' in mod_all_data:
-            mod_data['u_wind'] = mod_u
-            mod_data['v_wind'] = mod_v
-            mod_data['w_wind'] = mod_w
-
-        # lon at lats
-        mod_data['longitude'] = mod_all_data['longitude']
-        mod_data['latitude'] = mod_all_data['latitude']
-
-        # calculate murk concentration in air(from [kg kg-1 of air] to [kg m-3 of air])
-        # kg m-3_air = kg kg-1_air * kg_air m-3_air
-        mod_aer_conc = mod_aer * mod_rho
+        #if 'x_wind' in mod_all_data:
+        mod_data['u_wind'] = mod_u
+        mod_data['v_wind'] = mod_v
+        mod_data['w_wind'] = mod_w
+        mod_data['rot_u_wind'] = mod_u_rot
+        mod_data['rot_v_wind'] = mod_v_rot
 
         mod_data['virtual_temperature'] = mod_Tv
         mod_data['air_density'] = mod_rho

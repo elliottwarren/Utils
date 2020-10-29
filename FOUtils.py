@@ -6,6 +6,15 @@ Modified further by Elliott Warren using suggestions from Haywood et al., 2008, 
 
 Currently, just capable of producing clear sky backscatter (no particles reach critical radius
 during hygroscopic growth)
+
+3 sets of aerFO functions
+1) General aerFO (for most uses) - uses 2D model fields as inputs
+2) observation aerFO - uses observations instead of model data for input
+3) 3D aerFO - uses 3D model fields as inputs
+
+Do check that the general aerFO contains the same scientific settings (equations and constants) as the 3D aerFO, as
+the 3D aerFO was developed last with the most up to date settings, and these have been translated over to the general
+aerFO functions.
 """
 
 import numpy as np
@@ -19,7 +28,7 @@ import sys
 
 # Met Office machine setup returns 'linux2'. Windows PC returns 'win32'
 if sys.platform == 'linux2':
-    sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/Utils') #aerFO
+    sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/aerFOUtils') # aerFO
     sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/ellUtils') # general utils
     sys.path.append('/net/home/mm0100/ewarren/Documents/AerosolBackMod/scripts/ceilUtils') # ceil utils
     
@@ -47,11 +56,22 @@ def forward_operator(aer_mod, rh_frac, r_v, mod_rho, z_mod,  ceil_lam, version, 
     """
     Process the modelled data to get the attenuated backscatter and aerosol extinction
 
-    :param aer_mod:
-    :param rh_mod:
+    :param aer_mod: model aerosol
+    :param rh_frac: model relative humidity (fraction)
+    :param r_v: water vapour mixing ratio
+    :param mod_rho: air density
     :param z_mod: original 1D array of heights from the model
+    :param ceil_lam: ceilometer wavelength
+    :param version: ceilometer version to use (Note most up-to-date version is 2.0 though code does not explicitly
+    references versions > 1.1)
     :param mod_time: (array of datetimes) datetimes for each model time step
-    :return: bsc_mod
+    :keyword N0: mean number concentration (made from climatology)
+    :keyword r0: volumetric mean radius of aerosol (made from climatology)
+    :keyword p: exponent scaling factor to estimate radius (r) and number concentration (N) from their mean
+    climatological values (r0 and N0 respectively)
+    :keyword eta: scaling factor used to estimate broader aerosol distribution from monodisperse aerosol (used in
+    older version of aerFO)
+    :return: bsc_mod: forward modelled backscatter
     """
 
     # Redefine several aerFO constants for the urban case
@@ -66,7 +86,7 @@ def forward_operator(aer_mod, rh_frac, r_v, mod_rho, z_mod,  ceil_lam, version, 
     mod_alpha = FO_dict['alpha_a']
     mod_bscUnnAtt = FO_dict['unnatenuated_backscatter']
 
-    # NN = 28800 # number of enteries in time
+    # NN = 28800 # number of entries in time
     dz = np.zeros_like(z_mod)
     dz[0] = z_mod[0]
     dz[1:len(z_mod)] = z_mod[1:len(z_mod)] - z_mod[0:len(z_mod)-1]
@@ -89,15 +109,25 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
     """
     Compute extinction coefficient (aerosol extinction + water vapour extinction)
 
-    :param q_aer: aerosol mass mizing ratio [micrograms kg-1]
+    :param q_aer: aerosol mass mixing ratio [micrograms kg-1]
     :param rh_frac: relative humidity [ratio/dimensionless]
-    :param r0:
-    :param B:
+    :param r_v: water vapour mixing ratio
+    :param mod_rho: air density
+    :param z_mod: model level heights
+    :param r0: volumetric mean radius of aerosol (made from climatology)
+    :param p: exponent scaling factor to estimate radius (r) and number concentration (N) from their mean
+    climatological values (r0 and N0 respectively)
+    :param N0: mean number concentration (made from climatology)
+    :param m0: mean aerosol mass (made from climatology)
+    :param eta: scaling factor used to estimate broader aerosol distribution from monodisperse aerosol (used in
+    older version of aerFO)
+    :param ceil_lam: ceilometer wavelength
+    :param version: ceilometer version to use (Note most up-to-date version is 2.0 though code does not explicitly
     :param mod_time: (array of datetimes) datetimes for each timestep
     :return: alpha_a: total extinction coefficient
-    :return: beta_a: UNattenuated backscatter
+    :return: beta_a: Unattenuated backscatter
 
-    Most of the function calculates the AEROSOL extinction coefficient and relevent variables (particle extnction
+    Most of the function calculates the AEROSOL extinction coefficient and relevant variables (particle extinction
     efficiency). Last part also calculates water vapour extinction coefficient (same as absorption coefficient
     as water vapour scattering is negligable, given the tiny size of vapour gas (think its ~1e-28)
 
@@ -168,43 +198,6 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
         r_m[where_lt_crit] = r_d[where_lt_crit]
 
         return r_m
-
-    def get_S_climatology(mod_time, rh_frac, ceil_lam):
-
-        """
-        Create the S array from the climatology (month, RH_fraction) given the month and RH
-        :param mod_time:
-        :param rh_frac:
-        :param ceil_lam (int): ceilometer wavelength [nm]
-        :return: S (time, height):
-        """
-
-        # 1. Read in the data
-        filename = 'C:/Users/Elliott/Documents/PhD Reading/PhD Research/Aerosol Backscatter/common_data/Mie/' + \
-                   'S_climatology_NK_SMPS_APS_' + str(ceil_lam) + 'nm.npy'
-
-        data = np.load(filename).flat[0]
-        S_clim = data['S_climatology']
-        S_RH_frac = data['RH_frac']
-
-        # 2. Create S array given the time and RH
-
-        # get height range from rh_frac
-        height_idx_range = rh_frac.shape[1]
-
-        # find S array
-        S = np.empty(rh_frac.shape)
-        S[:] = np.nan
-        for t, time_t in enumerate(mod_time):  # time
-            # get month idx (e.g. idx for 5th month = 4)
-            month_idx = time_t.month - 1
-            for h in range(height_idx_range):  # height
-
-                # find RH idx for this month, and put the element into the S array
-                _, rh_idx, _ = eu.nearest(S_RH_frac, rh_frac[t, h])
-                S[t, h] = S_clim[month_idx, rh_idx]
-
-        return S
 
     def get_S_hourly_timeseries(mod_time, ceil_lam):
 

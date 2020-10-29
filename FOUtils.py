@@ -326,9 +326,8 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
 
     elif version >= 1.1:
         if 'use_S_hourly' not in kwargs:
-            # Read in from look up table (monthly varying, for either an urban or rural site)
-            # hold it constant for now, until the climatology has been made
-            S = get_S_climatology(mod_time, rh_frac, ceil_lam)
+            # use mean S for NK, calculated from the lidar ratio work in paper 2
+            S = 43.136
 
         else:
             if kwargs['use_S_hourly'] == True:
@@ -357,6 +356,29 @@ def calc_ext_coeff(q_aer, rh_frac, r_v, mod_rho, z_mod, r0, p, N0, m0, eta, ceil
                 'S': S}
 
     return FO_dict
+
+# Transmission
+def compute_transmission(alpha_extinction, dz):
+
+    import numpy as np
+
+    ss = np.shape(alpha_extinction)
+    # print "1. compute_transmission: size = ", ss[0],ss[1]
+
+    integral_alpha = np.empty_like(alpha_extinction)
+    transmission = np.empty_like(alpha_extinction)
+    # print np.shape(integral_alpha), np.shape(transmission)
+
+    # print  "2. compute_transmission: ",
+    # np.shape(alpha_extinction),np.shape(dz)
+
+    integral_alpha = np.cumsum(alpha_extinction * dz[0:len(dz)], axis=1)
+
+    # print  "3. compute_transmission: ",alpha_extinction*dz[0:len(dz)],integral_alpha
+    # transmission =  integral_alpha
+    transmission = np.exp(-2.0 * integral_alpha)
+
+    return integral_alpha, transmission
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # 1.2 Observation aerFO (one height level)
@@ -1087,18 +1109,6 @@ def mod_site_extract_calc_3D(day, modDatadir, model_type, ceil_lam,
 #     if 'boundary_layer_sensible_heat_flux' in mod_all_data:
 #         mod_Q_H = mod_all_data['boundary_layer_sensible_heat_flux'][range_time, :, :, :]
 
-    # # fast sensitivity analysis
-    # mod_T = np.empty((25,1)) # 15 degC
-    # mod_aer = np.empty((25,1))
-    # mod_q = np.empty((25,1))
-    # mod_h = np.empty((25,1))
-    # mod_p = np.empty((25,1))
-    # mod_T[:] = 285.15 # 12 degC
-    # mod_aer[:] = 24.0
-    # mod_q[:] = 0.006
-    # mod_h[:] = 1.0
-    # mod_p[:] = 101300.0
-
     # convert temperature to degree C
     mod_T_celsius = mod_T - 273.15
     # calculate water vapour mixing ratio [kg kg-1]: page 100 - Thermal physics of the atmosphere
@@ -1373,31 +1383,6 @@ def compute_transmission_3D(alpha_extinction, dz):
     transmission = np.exp(-2.0 * optical_depth)
 
     return optical_depth, transmission
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-
-# Transmission
-def compute_transmission(alpha_extinction, dz):
-
-    import numpy as np
-
-    ss = np.shape(alpha_extinction)
-    # print "1. compute_transmission: size = ", ss[0],ss[1]
-
-    integral_alpha = np.empty_like(alpha_extinction)
-    transmission = np.empty_like(alpha_extinction)
-    # print np.shape(integral_alpha), np.shape(transmission)
-
-    # print  "2. compute_transmission: ",
-    # np.shape(alpha_extinction),np.shape(dz)
-
-    integral_alpha = np.cumsum(alpha_extinction * dz[0:len(dz)], axis=1)
-
-    # print  "3. compute_transmission: ",alpha_extinction*dz[0:len(dz)],integral_alpha
-    # transmission =  integral_alpha
-    transmission = np.exp(-2.0 * integral_alpha)
-
-    return integral_alpha, transmission
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # 1.1 Q_ext calculation (Q_ext,dry * f(RH))
